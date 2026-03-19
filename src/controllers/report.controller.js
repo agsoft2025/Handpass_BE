@@ -91,16 +91,16 @@ const formatDataByReport = (report_type, item) => {
     };
   }
 
-  if (report_type === "user_report") {
+  if (report_type === "user_report" || report_type === "enroll_report") {
     return {
       user_id: item.user_id,
       user_name: item.user_name,
       email: item.email,
       phone_number: item.phone_number,
       sn: item.sn,
-      device_name: item.device_name,
-      created_at: item.created_at
-        ? moment(item.created_at).format("DD-MM-YYYY")
+      enrollment_device: item.device_name,
+      enroll_date_time: item.created_at
+        ? moment(item.created_at).format("DD-MM-YYYY HH:mm:ss")
         : null
     };
   }
@@ -134,7 +134,7 @@ exports.deviceAccessReport = async (req, res) => {
     USER REPORT
     --------------------------------
     */
-    if (report_type === "user_report") {
+    if (report_type === "user_report" || report_type === "enroll_report") {
 
       if (user_id) {
         values.push(user_id);
@@ -163,7 +163,7 @@ exports.deviceAccessReport = async (req, res) => {
           u.admin_auth,
           u.sn,
           d.device_name,
-          TO_CHAR(u.created_at, 'YYYY-MM-DD') AS created_at
+          u.created_at
         FROM users u
         LEFT JOIN devices d ON d.sn = u.sn
       `;
@@ -374,6 +374,7 @@ exports.deviceAccessReport = async (req, res) => {
     ]);
 
     let data = dataResult.rows;
+    data = data.map((item) => formatDataByReport(report_type, item));
 
     /*
     --------------------------------

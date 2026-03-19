@@ -67,6 +67,30 @@ CREATE TABLE IF NOT EXISTS wiegand_groups (
     CONSTRAINT unique_group_per_device UNIQUE (sn, group_id)
 );
 
+CREATE TABLE IF NOT EXISTS time_groups (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    time_group_id VARCHAR(50) NOT NULL,
+    timestamp BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000),
+    del_flag BOOLEAN NOT NULL DEFAULT FALSE,
+    time_configs JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP DEFAULT now(),
+    updated_at TIMESTAMP DEFAULT now(),
+    CONSTRAINT unique_time_group_id UNIQUE (time_group_id)
+);
+
+CREATE TABLE IF NOT EXISTS device_group_assignments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sn VARCHAR(50) NOT NULL,
+    remote_group_id VARCHAR(50) NOT NULL,
+    time_group_uuid UUID REFERENCES time_groups(id) ON DELETE SET NULL,
+    time_group_id VARCHAR(50) NOT NULL,
+    timestamp BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000),
+    del_flag BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT now(),
+    updated_at TIMESTAMP DEFAULT now(),
+    CONSTRAINT unique_device_remote_group UNIQUE (sn, remote_group_id)
+);
+
 CREATE TABLE IF NOT EXISTS user_wiegands (
     id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sn VARCHAR(50) NOT NULL,
@@ -121,6 +145,30 @@ CREATE TABLE  IF NOT EXISTS processed_attendance_logs (
     `);
 
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token TEXT`);
+
+    await pool.query(`ALTER TABLE user_wiegands ADD COLUMN IF NOT EXISTS time_group_id VARCHAR(50)`);
+    await pool.query(
+      `ALTER TABLE user_wiegands ADD COLUMN IF NOT EXISTS time_group_uuid UUID REFERENCES time_groups(id) ON DELETE SET NULL`
+    );
+
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'unique_user_device'
+        ) THEN
+          ALTER TABLE user_wiegands DROP CONSTRAINT unique_user_device;
+        END IF;
+      END $$;
+    `);
+
+    await pool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS user_wiegands_unique_active_assignment
+       ON user_wiegands (user_id, sn, group_id, time_group_id)
+       WHERE del_flag = false`
+    );
 
     console.log("✅ Tables checked/created successfully.");
   } catch (err) {
