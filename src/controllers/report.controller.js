@@ -230,6 +230,10 @@ exports.deviceAccessReport = async (req, res) => {
         values.push(sn);
         whereClauses.push(`dal.sn = $${values.length}`);
       }
+      if (group_id) {
+        values.push(group_id);
+        whereClauses.push(`uw.group_id = $${values.length}`);
+      }
 
       sortableFields = {
         user_id: "dal.user_id",
@@ -237,7 +241,7 @@ exports.deviceAccessReport = async (req, res) => {
         created_at: "dal.created_at"
       };
 
-      query = `
+      query1 = `
         SELECT
           dal.id,
           dal.sn,
@@ -250,6 +254,23 @@ exports.deviceAccessReport = async (req, res) => {
         FROM device_access_logs dal
         LEFT JOIN devices d ON d.sn = dal.sn
       `;
+      query = `
+  SELECT
+    dal.id,
+    dal.sn,
+    d.device_name,
+    dal.name AS user_name,
+    dal.user_id,
+    dal.palm_type,
+    dal.device_date_time,
+    TO_CHAR(dal.created_at, 'YYYY-MM-DD') AS created_at
+  FROM device_access_logs dal
+  LEFT JOIN devices d ON d.sn = dal.sn
+  LEFT JOIN user_wiegands uw 
+    ON uw.user_id = dal.user_id 
+    AND uw.sn = dal.sn
+    AND uw.del_flag = false
+`;
 
       countQuery = `SELECT COUNT(*) FROM device_access_logs dal`;
     }
@@ -462,9 +483,8 @@ exports.fetchUsersByGroup = async (req, res) => {
     // 🔥 Required for DISTINCT ON
     const orderField = `u.user_id, ${baseOrderField}`;
 
-    const orderBy = `ORDER BY ${orderField} ${
-      sortOrder === "asc" ? "ASC" : "DESC"
-    }`;
+    const orderBy = `ORDER BY ${orderField} ${sortOrder === "asc" ? "ASC" : "DESC"
+      }`;
 
     // 🔹 Pagination (robust handling)
     const pageNum = parseInt(page) || 1;
