@@ -1777,27 +1777,46 @@ exports.queryWiegandGroup = async (req, res) => {
     const deviceTs = Number(device_timestamp) || 0;
 
     // -----------------------------
-    // 2️⃣ Query wiegand_groups
+    // 2️⃣ Query device_group_assignments (new model)
     // -----------------------------
-    const result = await pool.query(
+    let result = await pool.query(
       `
-      SELECT group_id, timestamp, del_flag, time_configs
-      FROM wiegand_groups
-      WHERE sn = $1
-        AND timestamp > $2
-      ORDER BY timestamp ASC
+      SELECT
+        dga.remote_group_id,
+        dga.timestamp,
+        dga.del_flag,
+        tg.time_configs
+      FROM device_group_assignments dga
+      LEFT JOIN time_groups tg ON tg.id = dga.time_group_uuid
+      WHERE dga.sn = $1
+        AND dga.timestamp > $2
+      ORDER BY dga.timestamp ASC
       `,
       [sn, deviceTs]
     );
+
+    // Fallback: legacy wiegand_groups
+    if (!result.rows || result.rows.length === 0) {
+      result = await pool.query(
+        `
+        SELECT group_id AS remote_group_id, timestamp, del_flag, time_configs
+        FROM wiegand_groups
+        WHERE sn = $1
+          AND timestamp > $2
+        ORDER BY timestamp ASC
+        `,
+        [sn, deviceTs]
+      );
+    }
 
     // -----------------------------
     // 3️⃣ Format result
     // -----------------------------
     const idDataList = result.rows.map(group => {
-      const { group_id, timestamp, del_flag, time_configs } = group;
+      const { remote_group_id, timestamp, del_flag, time_configs } = group;
 
       const record = {
-        id: group_id,
+        id: remote_group_id,
         timestamp: timestamp.toString(),
         del_flag: !!del_flag
       };

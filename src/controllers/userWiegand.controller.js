@@ -41,7 +41,20 @@ exports.addUserWiegand1 = async (req, res) => {
       del_flag
     ];
 
-    const result = await pool.query(query, values);
+    let result;
+    try {
+      result = await pool.query(query, values);
+    } catch (e) {
+      // If the partial unique index exists, inserting an exact duplicate will throw.
+      // Convert to a friendly 409.
+      if (e && (e.code === "23505" || String(e.message || "").includes("duplicate"))) {
+        return res.status(409).json({
+          success: false,
+          message: "Assignment already exists for this user/device/remote group/time group"
+        });
+      }
+      throw e;
+    }
 
     return res.status(201).json({
       success: true,
@@ -60,12 +73,12 @@ exports.addUserWiegand1 = async (req, res) => {
 exports.addUserWiegand = async (req, res) => {
   try {
 
-    const { sn, user_id, group_id = '', del_flag = false } = req.body;
+    const { sn, user_id, group_id = '', time_group_id = '', del_flag = false } = req.body;
 
-    if (!sn || !user_id || !group_id) {
+    if (!sn || !user_id || !group_id || !time_group_id) {
       return res.status(400).json({
         success: false,
-        message: "sn, user_id and group_id are required"
+        message: "sn, user_id, group_id and time_group_id are required"
       });
     }
 
@@ -84,52 +97,73 @@ exports.addUserWiegand = async (req, res) => {
       });
     }
 
-    // 🔹 check if already exists
-    const existingUser = await pool.query(
-      `SELECT id FROM user_wiegands WHERE user_id = $1 AND sn = $2`,
-      [user_id, sn]
+    const existTimeGroup = await pool.query(
+      `SELECT id, time_group_id FROM time_groups WHERE time_group_id = $1 AND del_flag = false`,
+      [time_group_id]
     );
-
-    if (existingUser.rows.length > 0) {
-      return res.status(409).json({
+    if (existTimeGroup.rows.length === 0) {
+      return res.status(400).json({
         success: false,
-        message: "Group already existing for this user and device"
+        message: "Time group not found"
       });
     }
 
-    const query1 = `
+    // Prevent exact duplicate assignment (same user + device + remote group + time group)
+    const existingAssignment = await pool.query(
+      `
+      SELECT id
+      FROM user_wiegands
+      WHERE user_id = $1
+        AND sn = $2
+        AND group_id = $3
+        AND time_group_id = $4
+        AND del_flag = false
+      `,
+      [user_id, sn, group_id, time_group_id]
+    );
+    if (existingAssignment.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Assignment already exists for this user/device/remote group/time group"
+      });
+    }
+
+    const query = `
       INSERT INTO user_wiegands
-      (sn, user_id, group_id, group_uuid, timestamp, del_flag)
-      VALUES ($1,$2,$3,$4,$5,$6)
-      ON CONFLICT (user_id, sn)
-      DO UPDATE SET
-        group_id = EXCLUDED.group_id,
-        group_uuid = EXCLUDED.group_uuid,
-        timestamp = EXCLUDED.timestamp,
-        del_flag = EXCLUDED.del_flag
+        (sn, user_id, group_id, group_uuid, time_group_id, time_group_uuid, timestamp, del_flag)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8)
       RETURNING *
     `;
-    const query =`INSERT INTO user_wiegands
-(sn, user_id, group_id, group_uuid, timestamp, del_flag)
-VALUES ($1,$2,$3,$4,$5,$6)
-ON CONFLICT ON CONSTRAINT unique_user_device
-DO UPDATE SET
-  group_id = EXCLUDED.group_id,
-  group_uuid = EXCLUDED.group_uuid,
-  timestamp = EXCLUDED.timestamp,
-  del_flag = EXCLUDED.del_flag
-RETURNING *`;
 
     const values = [
       sn,
       user_id,
       group_id,
       existWiegandGrp.rows[0].id,
+      time_group_id,
+      existTimeGroup.rows[0].id,
       timestamp,
       del_flag
     ];
 
     const result = await pool.query(query, values);
+
+    await pool.query(
+      `
+      INSERT INTO device_group_assignments
+        (sn, remote_group_id, time_group_id, time_group_uuid, timestamp, del_flag)
+      VALUES
+        ($1, $2, $3, $4, $5, false)
+      ON CONFLICT ON CONSTRAINT unique_device_remote_group
+      DO UPDATE SET
+        time_group_id = EXCLUDED.time_group_id,
+        time_group_uuid = EXCLUDED.time_group_uuid,
+        timestamp = EXCLUDED.timestamp,
+        del_flag = false
+      `,
+      [sn, group_id, time_group_id, existTimeGroup.rows[0].id, timestamp]
+    );
 
     return res.status(201).json({
       success: true,
@@ -168,7 +202,7 @@ exports.getUserWiegand = async (req, res) => {
     const offset = (page - 1) * limit;
 
     // ---- Sorting ----
-    const validSortColumns = ["user_id", "sn", "group_id", "timestamp"];
+    const validSortColumns = ["user_id", "sn", "group_id", "time_group_id", "timestamp"];
     const sortColumn = validSortColumns.includes(sort_by)
       ? sort_by
       : "timestamp";
@@ -205,6 +239,7 @@ exports.getUserWiegand = async (req, res) => {
         CAST(user_id AS TEXT) ILIKE $${paramIndex}
         OR sn ILIKE $${paramIndex}
         OR group_id ILIKE $${paramIndex}
+        OR time_group_id ILIKE $${paramIndex}
       )`);
       values.push(`%${search}%`);
       paramIndex++;
@@ -297,6 +332,27 @@ exports.softDeleteUserWiegand = async (req, res) => {
     `;
 
     const updateResult = await pool.query(updateQuery, [id]);
+
+    const deleted = updateResult.rows[0];
+    if (deleted?.sn && deleted?.group_id) {
+      const remaining = await pool.query(
+        `SELECT COUNT(*) FROM user_wiegands WHERE sn = $1 AND group_id = $2 AND del_flag = false`,
+        [deleted.sn, deleted.group_id]
+      );
+      const count = Number(remaining.rows?.[0]?.count ?? 0);
+      if (count === 0) {
+        await pool.query(
+          `
+          UPDATE device_group_assignments
+          SET del_flag = true,
+              timestamp = $1,
+              updated_at = now()
+          WHERE sn = $2 AND remote_group_id = $3
+          `,
+          [Date.now(), deleted.sn, deleted.group_id]
+        );
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -442,7 +498,7 @@ exports.updateUserWiegand = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { sn, user_id, group_id } = req.body;
+    const { sn, user_id, group_id, time_group_id } = req.body;
 
     if (!id) {
       return res.status(400).json({
@@ -479,7 +535,9 @@ exports.updateUserWiegand = async (req, res) => {
     let newSn = sn || current.sn;
     let newUserId = user_id || current.user_id;
     let newGroupId = group_id || current.group_id;
+    let newTimeGroupId = time_group_id || current.time_group_id;
     let group_uuid = current.group_uuid;
+    let time_group_uuid = current.time_group_uuid;
 
     // -----------------------------------
     // 2️⃣ Validate group if changed
@@ -504,22 +562,28 @@ exports.updateUserWiegand = async (req, res) => {
     }
 
     // -----------------------------------
-    // 3️⃣ Prevent duplicate (user + device)
+    // 3️⃣ Prevent exact duplicate assignment
+    //    (user_id + sn + group_id + time_group_id) among active rows
     // -----------------------------------
     const duplicateCheck = await client.query(
-      `SELECT id
-       FROM user_wiegands
-       WHERE user_id = $1
-       AND sn = $2
-       AND id != $3`,
-      [newUserId, newSn, id]
+      `
+      SELECT id
+      FROM user_wiegands
+      WHERE user_id = $1
+        AND sn = $2
+        AND group_id = $3
+        AND time_group_id = $4
+        AND del_flag = false
+        AND id != $5
+      `,
+      [newUserId, newSn, newGroupId, newTimeGroupId, id]
     );
 
     if (duplicateCheck.rows.length > 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: "User already assigned to this device"
+        message: "Assignment already exists for this user/device/remote group/time group"
       });
     }
 
@@ -534,8 +598,10 @@ exports.updateUserWiegand = async (req, res) => {
         user_id = $2,
         group_id = $3,
         group_uuid = $4,
-        timestamp = $5
-      WHERE id = $6
+        time_group_id = $5,
+        time_group_uuid = $6,
+        timestamp = $7
+      WHERE id = $8
       RETURNING *;
       `,
       [
@@ -543,9 +609,27 @@ exports.updateUserWiegand = async (req, res) => {
         newUserId,
         newGroupId,
         group_uuid,
+        newTimeGroupId,
+        time_group_uuid,
         timestamp,
         id
       ]
+    );
+
+    await client.query(
+      `
+      INSERT INTO device_group_assignments
+        (sn, remote_group_id, time_group_id, time_group_uuid, timestamp, del_flag)
+      VALUES
+        ($1, $2, $3, $4, $5, false)
+      ON CONFLICT ON CONSTRAINT unique_device_remote_group
+      DO UPDATE SET
+        time_group_id = EXCLUDED.time_group_id,
+        time_group_uuid = EXCLUDED.time_group_uuid,
+        timestamp = EXCLUDED.timestamp,
+        del_flag = false
+      `,
+      [newSn, newGroupId, newTimeGroupId, time_group_uuid, timestamp]
     );
 
     await client.query("COMMIT");

@@ -25,6 +25,8 @@ const holidayRoutes = require("./routes/holiday.route");
 const shiftRoutes = require("./routes/shift.route");
 const userWiegandRoutes = require("./routes/userWiegand.routes")
 const WiegandGroupRoutes = require("./routes/wiegandGroup.routes")
+const timeGroupRoutes = require("./routes/timeGroup.routes")
+const deviceGroupAssignmentRoutes = require("./routes/deviceGroupAssignment.routes")
 const attendanceRoutes = require('./routes/attendance.route');
 const { pool } = require('./config/database')
 // const { restartDatabase } = require('./crone/deviceOfflineCron');
@@ -72,6 +74,8 @@ app.use("/api/auth", authRoutes)
 app.use("/v1",connectDeviceRoutes)
 app.use("/v1/api",userWiegandRoutes)
 app.use("/v1/api",WiegandGroupRoutes)
+app.use("/v1/api",timeGroupRoutes)
+app.use("/v1/api",deviceGroupAssignmentRoutes)
 app.use("/v1/attendance",attendanceRoutes)
 app.use("/api/attendance",attendanceRoutes)
 app.use("/api/upload",fileUploadRoutes)
