@@ -16,6 +16,20 @@ exports.createDeviceGroupAssignment = async (req, res) => {
 
     await client.query("BEGIN");
 
+    const remoteGroupRes = await client.query(
+      `SELECT id FROM wiegand_groups WHERE group_id = $1 AND sn = $2 AND del_flag = false`,
+      [remote_group_id, sn]
+    );
+
+    if (remoteGroupRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        code: 400,
+        msg: "Remote group not found for this serial number",
+        data: null,
+      });
+    }
+
     const tgRes = await client.query(
       `SELECT id, time_group_id FROM time_groups WHERE time_group_id = $1 AND del_flag = false`,
       [time_group_id]
@@ -211,6 +225,16 @@ exports.updateDeviceGroupAssignment = async (req, res) => {
     const newSn = typeof sn !== "undefined" ? sn : current.sn;
     const newRemoteGroupId = typeof remote_group_id !== "undefined" ? remote_group_id : current.remote_group_id;
     const newTimeGroupId = typeof time_group_id !== "undefined" ? time_group_id : current.time_group_id;
+
+    const remoteGroupRes = await client.query(
+      `SELECT id FROM wiegand_groups WHERE group_id = $1 AND sn = $2 AND del_flag = false`,
+      [newRemoteGroupId, newSn]
+    );
+
+    if (remoteGroupRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ code: 400, msg: "Remote group not found for this serial number", data: null });
+    }
 
     const tgRes = await client.query(
       `SELECT id FROM time_groups WHERE time_group_id = $1 AND del_flag = false`,
