@@ -1239,12 +1239,10 @@ exports.checkRegistration = async (req, res) => {
         SELECT 1
         FROM user_wiegands uw
         JOIN users u ON u.user_id = uw.user_id
-        JOIN wiegand_groups wg ON wg.id = uw.group_uuid
-        WHERE wg.sn = $1
+        WHERE uw.sn = $1
           AND u.user_id = $2
           AND uw.del_flag = false
           AND u.del_flag = false
-          AND wg.del_flag = false
       ) AS is_registered
       `,
       [sn, id]
@@ -1252,6 +1250,7 @@ exports.checkRegistration = async (req, res) => {
 
     return res.json({
       ...ERR.SUCCESS,
+      is_registered: result.rows[0].is_registered,
       data: {
         is_registered: result.rows[0].is_registered
       }
@@ -1356,12 +1355,10 @@ exports.queryUserImages = async (req, res) => {
       SELECT u.name, u.image_left, u.image_right
       FROM user_wiegands uw
       JOIN users u ON u.user_id = uw.user_id
-      JOIN wiegand_groups wg ON wg.id = uw.group_uuid
-      WHERE wg.sn = $1
+      WHERE uw.sn = $1
         AND u.user_id = $2
         AND uw.del_flag = false
         AND u.del_flag = false
-        AND wg.del_flag = false
       LIMIT 1
       `,
       [sn, studentId]

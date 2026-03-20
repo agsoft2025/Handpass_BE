@@ -13,7 +13,7 @@ async function createTablesIfNotExist() {
   sn VARCHAR(50),
   user_id VARCHAR(100),
   master_user_id VARCHAR(100),
-  role VARCHAR(20) NOT NULL DEFAULT 'inmate' CHECK (role IN ('admin', 'superadmin', 'inmate', 'staff', 'guard')),
+  role VARCHAR(20) NOT NULL DEFAULT 'inmate' CHECK (role IN ('admin', 'superadmin', 'inmate', 'staff', 'guard', 'operator')),
   image_left TEXT,
   image_right TEXT,
   wiegand_flag INT DEFAULT 0,
@@ -145,6 +145,34 @@ CREATE TABLE  IF NOT EXISTS processed_attendance_logs (
     `);
 
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token TEXT`);
+
+    await pool.query(`
+      DO $$
+      DECLARE
+        role_check_name text;
+      BEGIN
+        SELECT c.conname
+        INTO role_check_name
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE t.relname = 'users'
+          AND c.contype = 'c'
+          AND pg_get_constraintdef(c.oid) ILIKE '%role%in%'
+        LIMIT 1;
+
+        IF role_check_name IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', role_check_name);
+        END IF;
+
+        ALTER TABLE users
+          ADD CONSTRAINT users_role_check
+          CHECK (role IN ('admin', 'superadmin', 'inmate', 'staff', 'guard', 'operator'));
+      EXCEPTION
+        WHEN duplicate_object THEN
+          NULL;
+      END $$;
+    `);
 
     await pool.query(`ALTER TABLE user_wiegands ADD COLUMN IF NOT EXISTS time_group_id VARCHAR(50)`);
     await pool.query(
