@@ -11,9 +11,11 @@ exports.createWiegandGroup = async (req, res) => {
             time_configs = [],
             del_flag = 0
         } = req.body;
+        const normalizedGroupId = String(group_id || "").trim();
+        const normalizedSn = String(sn || "").trim();
         // const timestamp = Math.floor(Date.now() / 1000);
         const timestamp = Date.now();
-        if (!group_id || !sn || !timestamp) {
+        if (!normalizedGroupId || !normalizedSn || !timestamp) {
             return res.status(400).json({
                 code: 400,
                 msg: "group_id, sn, timestamp",
@@ -42,6 +44,44 @@ exports.createWiegandGroup = async (req, res) => {
 
         await client.query("BEGIN");
 
+        const existingSn = await client.query(
+            `
+            SELECT id, group_id
+            FROM wiegand_groups
+            WHERE sn = $1
+            LIMIT 1
+            `,
+            [normalizedSn]
+        );
+
+        if (existingSn.rows.length > 0) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                code: 409,
+                msg: `SN already exists for group_id ${existingSn.rows[0].group_id}`,
+                data: null
+            });
+        }
+
+        const existingGroupId = await client.query(
+            `
+            SELECT id, sn, group_id
+            FROM wiegand_groups
+            WHERE LOWER(TRIM(group_id)) = LOWER(TRIM($1))
+            LIMIT 1
+            `,
+            [normalizedGroupId]
+        );
+
+        if (existingGroupId.rows.length > 0) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                code: 409,
+                msg: `group_id ${existingGroupId.rows[0].group_id} already exists`,
+                data: null
+            });
+        }
+
         // -----------------------------
         // 2️⃣ Insert
         // -----------------------------
@@ -54,8 +94,8 @@ exports.createWiegandGroup = async (req, res) => {
     `;
 
         const values = [
-            group_id,
-            sn,
+            normalizedGroupId,
+            normalizedSn,
             parsedTimestamp,
             parsedDelFlag,
             JSON.stringify(time_configs)
@@ -195,6 +235,14 @@ exports.getWiegandGroups = async (req, res) => {
 
         const result = await pool.query(query, values);
 
+        if (!result.rows.length) {
+            return res.status(404).json({
+                code: 404,
+                msg: "No wiegand groups found",
+                data: []
+            });
+        }
+
         // ----------------------------
         // 5️⃣ Count Query (for pagination)
         // ----------------------------
@@ -282,24 +330,68 @@ exports.updateWiegandGroup = async (req, res) => {
         const values = [];
         let index = 1;
 
-        const newSn = sn ?? current.sn;
-        const newGroupId = group_id ?? current.group_id;
+        const normalizedSn =
+            typeof sn !== "undefined" ? String(sn || "").trim() : current.sn;
+        const normalizedGroupId =
+            typeof group_id !== "undefined" ? String(group_id || "").trim() : current.group_id;
 
-        // 2️⃣ Check unique constraint if sn or group_id is being updated
-        if (typeof sn !== "undefined" || typeof group_id !== "undefined") {
-            const conflict = await client.query(
+        if (typeof sn !== "undefined" && !normalizedSn) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+                code: 400,
+                msg: "sn is required",
+                data: null
+            });
+        }
+
+        if (typeof group_id !== "undefined" && !normalizedGroupId) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+                code: 400,
+                msg: "group_id is required",
+                data: null
+            });
+        }
+
+        if (typeof sn !== "undefined") {
+            const snConflict = await client.query(
                 `
-        SELECT id FROM wiegand_groups
-        WHERE sn = $1 AND group_id = $2 AND id != $3
-        `,
-                [newSn, newGroupId, id]
+                SELECT id, group_id
+                FROM wiegand_groups
+                WHERE sn = $1
+                  AND id != $2
+                LIMIT 1
+                `,
+                [normalizedSn, id]
             );
 
-            if (conflict.rows.length > 0) {
+            if (snConflict.rows.length > 0) {
                 await client.query("ROLLBACK");
                 return res.status(409).json({
                     code: 409,
-                    msg: "A group with this group_id already exists for this device",
+                    msg: `SN already exists for group_id ${snConflict.rows[0].group_id}`,
+                    data: null
+                });
+            }
+        }
+
+        if (typeof group_id !== "undefined") {
+            const groupConflict = await client.query(
+                `
+                SELECT id, group_id
+                FROM wiegand_groups
+                WHERE LOWER(TRIM(group_id)) = LOWER(TRIM($1))
+                  AND id != $2
+                LIMIT 1
+                `,
+                [normalizedGroupId, id]
+            );
+
+            if (groupConflict.rows.length > 0) {
+                await client.query("ROLLBACK");
+                return res.status(409).json({
+                    code: 409,
+                    msg: `group_id ${groupConflict.rows[0].group_id} already exists`,
                     data: null
                 });
             }
@@ -309,12 +401,12 @@ exports.updateWiegandGroup = async (req, res) => {
 
         if (typeof sn !== "undefined") {
             fields.push(`sn = $${index++}`);
-            values.push(sn);
+            values.push(normalizedSn);
         }
 
         if (typeof group_id !== "undefined") {
             fields.push(`group_id = $${index++}`);
-            values.push(group_id);
+            values.push(normalizedGroupId);
         }
 
         if (typeof time_configs !== "undefined") {

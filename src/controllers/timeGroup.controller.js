@@ -4,9 +4,10 @@ exports.createTimeGroup = async (req, res) => {
   const client = await pool.connect();
   try {
     const { time_group_id, time_configs = [], del_flag = 0 } = req.body;
+    const normalizedTimeGroupId = String(time_group_id || "").trim();
     const timestamp = Date.now();
 
-    if (!time_group_id || !timestamp) {
+    if (!normalizedTimeGroupId || !timestamp) {
       return res.status(400).json({
         code: 400,
         msg: "time_group_id, timestamp",
@@ -24,6 +25,25 @@ exports.createTimeGroup = async (req, res) => {
 
     await client.query("BEGIN");
 
+    const existingTimeGroup = await client.query(
+      `
+      SELECT id, time_group_id
+      FROM time_groups
+      WHERE LOWER(TRIM(time_group_id)) = LOWER(TRIM($1))
+      LIMIT 1
+      `,
+      [normalizedTimeGroupId]
+    );
+
+    if (existingTimeGroup.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        code: 409,
+        msg: `time_group_id ${existingTimeGroup.rows[0].time_group_id} already exists`,
+        data: null,
+      });
+    }
+
     const query = `
       INSERT INTO time_groups
         (time_group_id, timestamp, del_flag, time_configs)
@@ -33,7 +53,7 @@ exports.createTimeGroup = async (req, res) => {
     `;
 
     const values = [
-      time_group_id,
+      normalizedTimeGroupId,
       Number(timestamp),
       Boolean(del_flag),
       JSON.stringify(time_configs),
@@ -202,8 +222,39 @@ exports.updateTimeGroup = async (req, res) => {
     let index = 1;
 
     if (typeof time_group_id !== "undefined") {
+      const normalizedTimeGroupId = String(time_group_id || "").trim();
+
+      if (!normalizedTimeGroupId) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          code: 400,
+          msg: "time_group_id is required",
+          data: null,
+        });
+      }
+
+      const duplicateRes = await client.query(
+        `
+        SELECT id
+        FROM time_groups
+        WHERE LOWER(TRIM(time_group_id)) = LOWER(TRIM($1))
+          AND id != $2
+        LIMIT 1
+        `,
+        [normalizedTimeGroupId, id]
+      );
+
+      if (duplicateRes.rows.length > 0) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          code: 409,
+          msg: `time_group_id ${normalizedTimeGroupId} already exists`,
+          data: null,
+        });
+      }
+
       fields.push(`time_group_id = $${index++}`);
-      values.push(time_group_id);
+      values.push(normalizedTimeGroupId);
     }
 
     if (typeof time_configs !== "undefined") {

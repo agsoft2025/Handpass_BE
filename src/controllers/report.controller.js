@@ -30,34 +30,69 @@ const formatTimeConfig = (configs) => {
   });
 };
 
+const flattenTimeConfigColumns = (configs) => {
+  const formattedConfigs = formatTimeConfig(configs);
+
+  if (!formattedConfigs.length) {
+    return {
+      day: "",
+      start_time: "",
+      end_time: "",
+      note: ""
+    };
+  }
+
+  return {
+    day: formattedConfigs.map((config) => config.day).join(", "),
+    start_time: formattedConfigs.map((config) => config.start_time).join(", "),
+    end_time: formattedConfigs.map((config) => config.end_time).join(", "),
+    note: formattedConfigs
+      .map((config) => config.note)
+      .filter(Boolean)
+      .join(", ")
+  };
+};
+
+const normalizeReportDate = (input, boundary = "start") => {
+  if (!input) return null;
+
+  const rawValue = String(input).trim();
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(rawValue);
+
+  const parsed = isDateOnly
+    ? moment(rawValue, "YYYY-MM-DD", true)
+    : moment(rawValue, moment.ISO_8601, true);
+
+  if (!parsed.isValid()) return null;
+
+  return isDateOnly
+    ? (boundary === "start" ? parsed.startOf("day") : parsed.endOf("day")).toDate()
+    : parsed.toDate();
+};
+
 const formatDataByReport = (report_type, item) => {
 
   if (report_type === "user_wiegand_report") {
+    const timeConfigColumns = flattenTimeConfigColumns(item.time_configs);
+
     return {
       user_id: item.user_id,
       user_name: item.user_name,
-      email: item.email,
-      phone_number: item.phone_number,
-      sn: item.sn,
-      group_id: item.group_id,
-      day: item.day,
-      start_time: item.start_time,
-      end_time: item.end_time,
-      note: item.note
+      remote_group_id: item.remote_group_id,
+      time_group_id: item.time_group_id,
+      device_name: item.device_name,
+      serial_number: item.sn,
+      day: timeConfigColumns.day,
+      start_time: timeConfigColumns.start_time,
+      end_time: timeConfigColumns.end_time,
+      note: timeConfigColumns.note
     };
   }
 
   if (report_type === "group_report") {
     return {
       group_id: item.group_id,
-      sn: item.sn,
-      day: item.day,
-      start_time: item.start_time,
-      end_time: item.end_time,
-      note: item.note,
-      created_at: item.created_at
-        ? moment(item.created_at).format("DD-MM-YYYY")
-        : null
+      sn: item.sn
     };
   }
 
@@ -70,9 +105,6 @@ const formatDataByReport = (report_type, item) => {
       firmware_version: item.firmware_version,
       last_connect_time: item.last_connect_time
         ? moment(item.last_connect_time).format("DD-MM-YYYY HH:mm:ss")
-        : null,
-      created_at: item.created_at
-        ? moment(item.created_at).format("DD-MM-YYYY")
         : null
     };
   }
@@ -84,10 +116,7 @@ const formatDataByReport = (report_type, item) => {
       sn: item.sn,
       device_name: item.device_name,
       palm_type: item.palm_type,
-      device_time: item.device_date_time,
-      created_at: item.created_at
-        ? moment(item.created_at).format("DD-MM-YYYY")
-        : null
+      device_time: item.device_date_time
     };
   }
 
@@ -118,6 +147,8 @@ exports.deviceAccessReport = async (req, res) => {
       user_id,
       group_id,
       sn,
+      start_date,
+      end_date,
       sortField = "created_at",
       sortOrder = "desc",
       format = "json"
@@ -128,6 +159,7 @@ exports.deviceAccessReport = async (req, res) => {
     let query = "";
     let countQuery = "";
     let sortableFields = {};
+    let dateField = null;
 
     /*
     --------------------------------
@@ -151,6 +183,7 @@ exports.deviceAccessReport = async (req, res) => {
         user_id: "u.user_id",
         created_at: "u.created_at"
       };
+      dateField = "u.created_at";
 
       query = `
         SELECT
@@ -190,9 +223,9 @@ exports.deviceAccessReport = async (req, res) => {
 
       sortableFields = {
         device_name: "d.device_name",
-        sn: "d.sn",
-        created_at: "d.created_at"
+        sn: "d.sn"
       };
+      dateField = "d.last_connect_time";
 
       query = `
         SELECT
@@ -201,8 +234,7 @@ exports.deviceAccessReport = async (req, res) => {
           d.device_ip,
           d.online_status,
           d.firmware_version,
-          d.last_connect_time,
-          TO_CHAR(d.created_at, 'YYYY-MM-DD') AS created_at
+          d.last_connect_time
         FROM devices d
       `;
 
@@ -237,23 +269,10 @@ exports.deviceAccessReport = async (req, res) => {
 
       sortableFields = {
         user_id: "dal.user_id",
-        device_time: "dal.device_date_time",
-        created_at: "dal.created_at"
+        device_time: "dal.device_date_time"
       };
+      dateField = "dal.device_date_time";
 
-      query1 = `
-        SELECT
-          dal.id,
-          dal.sn,
-          d.device_name,
-          dal.name AS user_name,
-          dal.user_id,
-          dal.palm_type,
-          dal.device_date_time,
-          TO_CHAR(dal.created_at, 'YYYY-MM-DD') AS created_at
-        FROM device_access_logs dal
-        LEFT JOIN devices d ON d.sn = dal.sn
-      `;
       query = `
   SELECT
     dal.id,
@@ -262,8 +281,7 @@ exports.deviceAccessReport = async (req, res) => {
     dal.name AS user_name,
     dal.user_id,
     dal.palm_type,
-    dal.device_date_time,
-    TO_CHAR(dal.created_at, 'YYYY-MM-DD') AS created_at
+    dal.device_date_time
   FROM device_access_logs dal
   LEFT JOIN devices d ON d.sn = dal.sn
   LEFT JOIN user_wiegands uw 
@@ -297,13 +315,12 @@ exports.deviceAccessReport = async (req, res) => {
         sn: "wg.sn",
         created_at: "wg.created_at"
       };
+      dateField = "wg.created_at";
 
       query = `
         SELECT
           wg.group_id,
-          wg.sn,
-          TO_CHAR(wg.created_at, 'YYYY-MM-DD') AS created_at,
-          TO_CHAR(wg.updated_at, 'YYYY-MM-DD') AS created_at
+          wg.sn
         FROM wiegand_groups wg
       `;
 
@@ -313,6 +330,7 @@ exports.deviceAccessReport = async (req, res) => {
     // USER WIEGAND REPORT
     // --------------------------------
     else if (report_type === "user_wiegand_report") {
+      whereClauses.push(`uw.del_flag = false`);
 
       if (user_id) {
         values.push(user_id);
@@ -324,23 +342,40 @@ exports.deviceAccessReport = async (req, res) => {
         whereClauses.push(`uw.sn = $${values.length}`);
       }
 
+      if (group_id) {
+        values.push(group_id);
+        whereClauses.push(`uw.group_id = $${values.length}`);
+      }
+
       sortableFields = {
         user_id: "uw.user_id",
         group_id: "uw.group_id",
+        time_group_id: "uw.time_group_id",
+        device_name: "d.device_name",
         sn: "uw.sn"
       };
+      dateField = "TO_TIMESTAMP(uw.timestamp / 1000.0)";
 
       query = `
         SELECT
           uw.user_id,
           u.name AS user_name,
+          uw.group_id AS remote_group_id,
+          uw.time_group_id,
+          d.device_name,
           uw.sn,
-          uw.group_id
+          tg.time_configs
         FROM user_wiegands uw
         LEFT JOIN users u ON u.user_id = uw.user_id
+        LEFT JOIN devices d ON d.sn = uw.sn
+        LEFT JOIN time_groups tg ON tg.id = uw.time_group_uuid
       `;
 
-      countQuery = `SELECT COUNT(*) FROM user_wiegands uw`;
+      countQuery = `
+        SELECT COUNT(*)
+        FROM user_wiegands uw
+        LEFT JOIN devices d ON d.sn = uw.sn
+      `;
     }
 
     else {
@@ -348,6 +383,40 @@ exports.deviceAccessReport = async (req, res) => {
         success: false,
         message: "Invalid report type"
       });
+    }
+
+    const normalizedStartDate = normalizeReportDate(start_date, "start");
+    const normalizedEndDate = normalizeReportDate(end_date, "end");
+
+    if (start_date && !normalizedStartDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid start_date format"
+      });
+    }
+
+    if (end_date && !normalizedEndDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid end_date format"
+      });
+    }
+
+    if (normalizedStartDate && normalizedEndDate && normalizedStartDate > normalizedEndDate) {
+      return res.status(400).json({
+        success: false,
+        message: "start_date cannot be greater than end_date"
+      });
+    }
+
+    if (dateField && normalizedStartDate) {
+      values.push(normalizedStartDate);
+      whereClauses.push(`${dateField} >= $${values.length}`);
+    }
+
+    if (dateField && normalizedEndDate) {
+      values.push(normalizedEndDate);
+      whereClauses.push(`${dateField} <= $${values.length}`);
     }
 
     /*
@@ -396,6 +465,13 @@ exports.deviceAccessReport = async (req, res) => {
 
     let data = dataResult.rows;
     data = data.map((item) => formatDataByReport(report_type, item));
+
+    if (!data.length) {
+      return res.status(404).json({
+        success: false,
+        message: `No data found for ${report_type}`
+      });
+    }
 
     /*
     --------------------------------
@@ -546,6 +622,13 @@ exports.fetchUsersByGroup = async (req, res) => {
         ? pool.query(countQuery, values)
         : Promise.resolve({ rows: [{ count: 0 }] })
     ]);
+
+    if (!dataResult.rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No users found for this group"
+      });
+    }
 
     return res.status(200).json({
       success: true,

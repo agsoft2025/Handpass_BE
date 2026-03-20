@@ -3,6 +3,7 @@ const userData = require("../data/data")
 const { validationResult } = require("express-validator")
 const fs = require('fs');
 const path = require('path');
+const bcrypt = require("bcrypt");
 const ERR = require("../utils/errorCodes");
 
 exports.fetchAllUsers = async (req, res) => {
@@ -739,6 +740,197 @@ exports.updateUsersDetails = async (req, res) => {
       status: false,
       message: "Internal server error",
       error: error.message
+    });
+  }
+};
+
+exports.getUserProfile = async (req, res) => {
+  try {
+    const authUserId = req.user?.id;
+
+    if (!authUserId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        u.id,
+        u.name,
+        u.email,
+        u.role,
+        u.phone_number,
+        u.sn,
+        u.user_id,
+        u.master_user_id,
+        u.wiegand_flag,
+        u.admin_auth,
+        u.created_at,
+        u.updated_at,
+        d.device_name
+      FROM users u
+      LEFT JOIN devices d ON d.sn = u.sn
+      WHERE u.id = $1
+      `,
+      [authUserId]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({
+        success: false,
+        message: "User profile not found"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error("getUserProfile error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+exports.updateUserProfile = async (req, res) => {
+  try {
+    const authUserId = req.user?.id;
+    const {
+      name,
+      email,
+      phone_number,
+      current_password,
+      new_password
+    } = req.body;
+
+    if (!authUserId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
+
+    const userResult = await pool.query(
+      `
+      SELECT id, email, phone_number, password_hash
+      FROM users
+      WHERE id = $1
+      `,
+      [authUserId]
+    );
+
+    if (!userResult.rowCount) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    const currentUser = userResult.rows[0];
+
+    if (email) {
+      const emailCheck = await pool.query(
+        `SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id != $2`,
+        [email.trim(), authUserId]
+      );
+
+      if (emailCheck.rowCount > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Email already exists"
+        });
+      }
+    }
+
+    if (phone_number) {
+      const phoneCheck = await pool.query(
+        `SELECT id FROM users WHERE phone_number = $1 AND id != $2`,
+        [phone_number.trim(), authUserId]
+      );
+
+      if (phoneCheck.rowCount > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Phone number already exists"
+        });
+      }
+    }
+
+    if ((current_password && !new_password) || (!current_password && new_password)) {
+      return res.status(400).json({
+        success: false,
+        message: "Both current_password and new_password are required to update password"
+      });
+    }
+
+    const fields = [];
+    const values = [];
+    let index = 1;
+
+    if (typeof name !== "undefined") {
+      fields.push(`name = $${index++}`);
+      values.push(String(name).trim());
+    }
+
+    if (typeof email !== "undefined") {
+      fields.push(`email = $${index++}`);
+      values.push(String(email).trim());
+    }
+
+    if (typeof phone_number !== "undefined") {
+      fields.push(`phone_number = $${index++}`);
+      values.push(String(phone_number).trim());
+    }
+
+    if (current_password && new_password) {
+      const passwordMatched = await bcrypt.compare(current_password, currentUser.password_hash || "");
+
+      if (!passwordMatched) {
+        return res.status(400).json({
+          success: false,
+          message: "Current password is incorrect"
+        });
+      }
+
+      const hashedPassword = await bcrypt.hash(new_password, 10);
+      fields.push(`password_hash = $${index++}`);
+      values.push(hashedPassword);
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({
+        success: false,
+        message: "No fields provided for update"
+      });
+    }
+
+    values.push(authUserId);
+
+    const updateQuery = `
+      UPDATE users
+      SET ${fields.join(", ")}, updated_at = now()
+      WHERE id = $${index}
+      RETURNING id, name, email, role, phone_number, sn, user_id, master_user_id, wiegand_flag, admin_auth, created_at, updated_at
+    `;
+
+    const updateResult = await pool.query(updateQuery, values);
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile updated successfully",
+      data: updateResult.rows[0]
+    });
+  } catch (error) {
+    console.error("updateUserProfile error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error"
     });
   }
 };

@@ -5,6 +5,8 @@ const { authenticate, authorizeRoles } = require('../middleware/auth');
 
 routes.use(authenticate)
 routes.get("/",usersController.fetchAllUsers)
+routes.get("/profile", usersController.getUserProfile)
+routes.put("/profile", usersController.updateUserProfile)
 routes.get("/with-group",usersController.fetchAllUsersWithGroup)
 routes.delete("/:id", authorizeRoles('admin', 'superadmin'), usersController.deleteUsersWithGroup)
 routes.delete("/with-group/:id", authorizeRoles('admin', 'superadmin'), usersController.deleteUsersWithGroup)
