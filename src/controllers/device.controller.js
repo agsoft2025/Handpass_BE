@@ -874,7 +874,7 @@ exports.connect = async (req, res) => {
       [sn]
     );
 
-        const userMaxResult = await pool.query(
+    const userMaxResult = await pool.query(
       `
       SELECT COALESCE(
         MAX(EXTRACT(EPOCH FROM updated_at) * 1000),
@@ -1094,7 +1094,7 @@ exports.queryUsers = async (req, res) => {
     // ------------------------------------
     // 2. Query Users (Only updated after device timestamp)
     // ------------------------------------
-       const query1 = `SELECT
+    const query1 = `SELECT
   uw.user_id AS id,
   u.wiegand_flag,
   u.admin_auth,
@@ -1746,7 +1746,7 @@ exports.queryBatchImportPath = async (req, res) => {
 
 
 // group management
-exports.queryWiegandGroup = async (req, res) => {
+exports.queryWiegandGroup1 = async (req, res) => {
   try {
     // -----------------------------
     // 1️⃣ Validate parameters
@@ -1776,7 +1776,7 @@ exports.queryWiegandGroup = async (req, res) => {
     // -----------------------------
     // 2️⃣ Query device_group_assignments (new model)
     // -----------------------------
-    let result = await pool.query(
+    let result1 = await pool.query(
       `
       SELECT
         dga.remote_group_id,
@@ -1792,6 +1792,11 @@ exports.queryWiegandGroup = async (req, res) => {
       [sn, deviceTs]
     );
 
+    let result = await pool.query(`SELECT * FROM device_group_assignments`);
+    console.log("<><>result", result.rows)
+    // -----------------------------
+    // 2️⃣ Query wiegand_groups (legacy model)
+    // -----------------------------
     // Fallback: legacy wiegand_groups
     if (!result.rows || result.rows.length === 0) {
       result = await pool.query(
@@ -1846,7 +1851,86 @@ exports.queryWiegandGroup = async (req, res) => {
   }
 };
 
-exports.queryUserWiegand = async (req, res) => {
+exports.queryWiegandGroup = async (req, res) => {
+  try {
+    const { sn, device_timestamp } = req.body;
+
+    if (!sn || device_timestamp === undefined) {
+      return res.json({
+        ...ERR.PARAM_ERROR,
+        data: []
+      });
+    }
+
+    const deviceTs = Number(device_timestamp) || 0;
+
+    // const result = await pool.query(
+    //   `
+    //   SELECT 
+    //     wg.group_id AS id,
+    //     wg.timestamp,
+    //     wg.del_flag,
+    //     tg.time_configs
+    //   FROM wiegand_groups wg
+    //   LEFT JOIN device_group_assignments dga
+    //     ON wg.sn = dga.sn
+    //     AND wg.group_id = dga.remote_group_id
+    //   LEFT JOIN time_groups tg
+    //     ON dga.time_group_id = tg.time_group_id
+    //   WHERE wg.sn = $1
+    //     AND wg.timestamp > $2
+    //   ORDER BY wg.timestamp ASC
+    //   `,
+    //   [sn, deviceTs]
+    // );
+
+    const result = await pool.query(
+      `SELECT 
+  dga.remote_group_id AS id,
+  dga.timestamp,
+  dga.del_flag,
+  tg.time_configs
+FROM device_group_assignments dga
+LEFT JOIN time_groups tg
+  ON dga.time_group_id = tg.time_group_id
+WHERE dga.sn = $1
+  AND dga.timestamp > $2
+ORDER BY dga.timestamp ASC; 
+      `,
+      [sn, deviceTs]
+    );
+    console.log("<><>result", result.rows);
+
+
+    const formattedData = result.rows.map(item => {
+      const record = {
+        id: item.id,
+        timestamp: item.timestamp.toString(),
+        del_flag: item.del_flag
+      };
+
+      if (!item.del_flag && item.time_configs) {
+        record.time_configs = item.time_configs;
+      }
+
+      return record;
+    });
+
+    return res.json({
+      ...ERR.SUCCESS,
+      data: formattedData
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.json({
+      ...ERR.DB_QUERY_ERROR,
+      data: []
+    });
+  }
+};
+
+exports.queryUserWiegand1 = async (req, res) => {
   try {
     // -----------------------------
     // 1️⃣ Validate parameters
@@ -1919,6 +2003,57 @@ exports.queryUserWiegand = async (req, res) => {
     });
   }
 };
+
+exports.queryUserWiegand = async (req, res) => {
+  try {
+    const { sn, device_timestamp } = req.body;
+
+    if (!sn || device_timestamp === undefined) {
+      return res.json({
+        ...ERR.PARAM_ERROR,
+        data: []
+      });
+    }
+
+    const deviceTs = Number(device_timestamp) || 0;
+
+    const result = await pool.query(
+      `
+      SELECT 
+        user_id,
+        timestamp,
+        del_flag,
+        group_id
+      FROM user_wiegands
+      WHERE sn = $1
+        AND timestamp > $2
+      ORDER BY timestamp ASC
+      `,
+      [sn, deviceTs]
+    );
+
+    const formattedData = result.rows.map(item => ({
+      user_id: item.user_id,
+      timestamp: item.timestamp.toString(),
+      del_flag: item.del_flag,
+      ...(item.del_flag ? {} : { group_id: item.group_id })
+    }));
+
+    return res.json({
+      ...ERR.SUCCESS,
+      data: formattedData
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.json({
+      ...ERR.DB_QUERY_ERROR,
+      data: []
+    });
+  }
+};
+
+
 
 
 
