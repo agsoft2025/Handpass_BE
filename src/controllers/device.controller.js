@@ -1864,53 +1864,35 @@ exports.queryWiegandGroup = async (req, res) => {
 
     const deviceTs = Number(device_timestamp) || 0;
 
-    // const result = await pool.query(
-    //   `
-    //   SELECT 
-    //     wg.group_id AS id,
-    //     wg.timestamp,
-    //     wg.del_flag,
-    //     tg.time_configs
-    //   FROM wiegand_groups wg
-    //   LEFT JOIN device_group_assignments dga
-    //     ON wg.sn = dga.sn
-    //     AND wg.group_id = dga.remote_group_id
-    //   LEFT JOIN time_groups tg
-    //     ON dga.time_group_id = tg.time_group_id
-    //   WHERE wg.sn = $1
-    //     AND wg.timestamp > $2
-    //   ORDER BY wg.timestamp ASC
-    //   `,
-    //   [sn, deviceTs]
-    // );
-
     const result = await pool.query(
-      `SELECT 
-  dga.remote_group_id AS id,
-  dga.timestamp,
-  dga.del_flag,
-  tg.time_configs
-FROM device_group_assignments dga
-LEFT JOIN time_groups tg
-  ON dga.time_group_id = tg.time_group_id
-WHERE dga.sn = $1
-  AND dga.timestamp > $2
-ORDER BY dga.timestamp ASC; 
+      `
+      SELECT 
+        uw.group_id AS id,
+        MAX(uw.timestamp) AS timestamp,
+        BOOL_OR(uw.del_flag) AS del_flag,
+        jsonb_agg(DISTINCT tg.time_configs) AS time_configs
+      FROM user_wiegands uw
+      LEFT JOIN time_groups tg
+        ON uw.time_group_id = tg.time_group_id
+      WHERE uw.sn = $1
+        AND uw.timestamp > $2
+      GROUP BY uw.group_id
+      ORDER BY timestamp ASC;
       `,
       [sn, deviceTs]
     );
-    console.log("<><>result", result.rows);
-
+    console.log("<><>query wiegand group result", result.rows);
 
     const formattedData = result.rows.map(item => {
       const record = {
         id: item.id,
-        timestamp: item.timestamp.toString(),
+        timestamp: String(item.timestamp),
         del_flag: item.del_flag
       };
 
       if (!item.del_flag && item.time_configs) {
-        record.time_configs = item.time_configs;
+        // flatten array of arrays
+        record.time_configs = item.time_configs.flat();
       }
 
       return record;
@@ -1922,7 +1904,8 @@ ORDER BY dga.timestamp ASC;
     });
 
   } catch (error) {
-    console.error(error);
+    console.error("Query wiegand group error:", error);
+
     return res.json({
       ...ERR.DB_QUERY_ERROR,
       data: []
@@ -2038,6 +2021,7 @@ exports.queryUserWiegand = async (req, res) => {
       del_flag: item.del_flag,
       ...(item.del_flag ? {} : { group_id: item.group_id })
     }));
+    console.log("<><>user wiegant result", formattedData);
 
     return res.json({
       ...ERR.SUCCESS,

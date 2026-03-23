@@ -1,6 +1,6 @@
 const { pool } = require("../config/database");
 
-exports.createTimeGroup = async (req, res) => {
+exports.createTimeGroup1 = async (req, res) => {
   const client = await pool.connect();
   try {
     const { time_group_id, time_configs = [], del_flag = 0 } = req.body;
@@ -94,6 +94,120 @@ exports.createTimeGroup = async (req, res) => {
   }
 };
 
+exports.createTimeGroup = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { time_group_id, name = "", time_configs = [] } = req.body;
+
+    const normalizedTimeGroupId = String(time_group_id || "").trim();
+
+    // -----------------------------
+    // 1️⃣ Validation
+    // -----------------------------
+    if (!normalizedTimeGroupId) {
+      return res.status(400).json({
+        code: 400,
+        msg: "time_group_id is required",
+        data: null,
+      });
+    }
+
+    if (!Array.isArray(time_configs)) {
+      return res.status(400).json({
+        code: 400,
+        msg: "time_configs must be array",
+        data: null,
+      });
+    }
+
+    await client.query("BEGIN");
+
+    // -----------------------------
+    // 2️⃣ Check duplicate
+    // -----------------------------
+    const existing = await client.query(
+      `
+      SELECT id, time_group_id
+      FROM time_groups
+      WHERE LOWER(TRIM(time_group_id)) = LOWER(TRIM($1))
+      LIMIT 1
+      `,
+      [normalizedTimeGroupId]
+    );
+
+    if (existing.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        code: 409,
+        msg: `time_group_id ${existing.rows[0].time_group_id} already exists`,
+        data: null,
+      });
+    }
+
+    // -----------------------------
+    // 3️⃣ Insert (CLEAN)
+    // -----------------------------
+    const query = `
+      INSERT INTO time_groups
+        (time_group_id, name, time_configs)
+      VALUES
+        ($1, $2, $3)
+      RETURNING id, time_group_id, name, time_configs, created_at;
+    `;
+
+    const values = [
+      normalizedTimeGroupId,
+      name,
+      JSON.stringify(time_configs),
+    ];
+
+    const result = await client.query(query, values);
+
+    await client.query("COMMIT");
+
+    const row = result.rows[0];
+
+    // -----------------------------
+    // 4️⃣ Response
+    // -----------------------------
+    return res.status(200).json({
+      code: 200,
+      msg: "success",
+      data: {
+        id: row.id,
+        time_group_id: row.time_group_id,
+        name: row.name,
+        time_configs: row.time_configs,
+
+        // keep compatibility style
+        timestamp: String(Date.now()), // fake timestamp if needed
+        del_flag: false
+      },
+    });
+
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.code === "23505") {
+      return res.status(409).json({
+        code: 409,
+        msg: error.message,
+        data: null,
+      });
+    }
+
+    return res.status(500).json({
+      code: 500,
+      msg: error.message,
+      data: null,
+    });
+
+  } finally {
+    client.release();
+  }
+};
+
 exports.getTimeGroups = async (req, res) => {
   try {
     const {
@@ -102,51 +216,60 @@ exports.getTimeGroups = async (req, res) => {
       search = "",
       sort_by = "tg.time_group_id",
       sort_order = "ASC",
-      del_flag = 0,
     } = req.query;
-
-    const parsedDelFlag = Number(del_flag);
-    if (![0, 1].includes(parsedDelFlag)) {
-      return res.status(400).json({
-        code: 400,
-        msg: "del_flag",
-        data: null,
-      });
-    }
 
     const pageNum = Math.max(1, Number(page));
     const limitNum = Math.min(100, Math.max(1, Number(limit)));
     const offset = (pageNum - 1) * limitNum;
 
+    // -----------------------------
+    // 1️⃣ Valid sorting fields
+    // -----------------------------
     const validSortFields = [
       "tg.time_group_id",
-      "tg.timestamp",
       "tg.created_at",
       "tg.updated_at",
+      "tg.name"
     ];
 
-    const sortField = validSortFields.includes(sort_by) ? sort_by : "tg.time_group_id";
-    const sortDirection = String(sort_order).toUpperCase() === "DESC" ? "DESC" : "ASC";
+    const sortField = validSortFields.includes(sort_by)
+      ? sort_by
+      : "tg.time_group_id";
 
-    const whereConditions = ["tg.del_flag = $1"];
-    const values = [parsedDelFlag === 1];
-    let paramIndex = 2;
+    const sortDirection =
+      String(sort_order).toUpperCase() === "DESC" ? "DESC" : "ASC";
+
+    // -----------------------------
+    // 2️⃣ WHERE clause
+    // -----------------------------
+    const whereConditions = [];
+    const values = [];
+    let paramIndex = 1;
 
     if (search) {
-      whereConditions.push(`(tg.time_group_id ILIKE $${paramIndex})`);
+      whereConditions.push(`(
+        tg.time_group_id ILIKE $${paramIndex}
+        OR tg.name ILIKE $${paramIndex}
+      )`);
       values.push(`%${search}%`);
       paramIndex++;
     }
 
-    const whereClause = whereConditions.length ? `WHERE ${whereConditions.join(" AND ")}` : "";
+    const whereClause = whereConditions.length
+      ? `WHERE ${whereConditions.join(" AND ")}`
+      : "";
 
+    // -----------------------------
+    // 3️⃣ Main query
+    // -----------------------------
     const query = `
       SELECT
         tg.id,
         tg.time_group_id,
-        tg.timestamp,
-        tg.del_flag,
-        tg.time_configs
+        tg.name,
+        tg.time_configs,
+        tg.created_at,
+        tg.updated_at
       FROM time_groups tg
       ${whereClause}
       ORDER BY ${sortField} ${sortDirection}
@@ -157,20 +280,37 @@ exports.getTimeGroups = async (req, res) => {
 
     const result = await pool.query(query, values);
 
-    const countQuery = `SELECT COUNT(*) FROM time_groups tg ${whereClause}`;
-    const countResult = await pool.query(countQuery, values.slice(0, values.length - 2));
+    // -----------------------------
+    // 4️⃣ Count query
+    // -----------------------------
+    const countQuery = `
+      SELECT COUNT(*) 
+      FROM time_groups tg 
+      ${whereClause}
+    `;
+
+    const countResult = await pool.query(
+      countQuery,
+      values.slice(0, values.length - 2)
+    );
 
     const total = Number(countResult.rows[0].count);
 
+    // -----------------------------
+    // 5️⃣ Response
+    // -----------------------------
     return res.status(200).json({
       code: 200,
       msg: "operation successful",
       data: result.rows.map((row) => ({
         id: row.id,
         time_group_id: row.time_group_id,
-        timestamp: String(row.timestamp),
-        del_flag: row.del_flag,
+        name: row.name,
         time_configs: row.time_configs,
+
+        // ⚠️ compatibility layer (optional)
+        timestamp: String(Date.now()),
+        del_flag: false
       })),
       pagination: {
         total,
@@ -179,10 +319,11 @@ exports.getTimeGroups = async (req, res) => {
         total_pages: Math.ceil(total / limitNum),
       },
     });
+
   } catch (error) {
     return res.status(500).json({
       code: 500,
-      msg: "internal server down",
+      msg: error.message || "internal server error",
       data: null,
     });
   }

@@ -1,7 +1,7 @@
 const { pool } = require("../config/database");
 
 
-exports.createWiegandGroup = async (req, res) => {
+exports.createWiegandGroup1 = async (req, res) => {
     const client = await pool.connect();
 
     try {
@@ -122,6 +122,114 @@ exports.createWiegandGroup = async (req, res) => {
 
     } catch (error) {
         await client.query("ROLLBACK");
+        if (error.code === "23505") {
+            return res.status(409).json({
+                code: 409,
+                msg: error.message,
+                data: null
+            });
+        }
+
+        return res.status(500).json({
+            code: 500,
+            msg: error.message,
+            data: null
+        });
+
+    } finally {
+        client.release();
+    }
+};
+
+exports.createWiegandGroup = async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+        const { group_id, sn, del_flag = false } = req.body;
+
+        const normalizedGroupId = String(group_id || "").trim();
+        const normalizedSn = String(sn || "").trim();
+        const timestamp = Date.now();
+
+        // -----------------------------
+        // 1️⃣ Validation
+        // -----------------------------
+        if (!normalizedGroupId || !normalizedSn) {
+            return res.status(400).json({
+                code: 400,
+                msg: "group_id and sn are required",
+                data: null
+            });
+        }
+
+        await client.query("BEGIN");
+
+        // -----------------------------
+        // 2️⃣ Check duplicate (CORRECT WAY)
+        // -----------------------------
+        const existing = await client.query(
+            `
+            SELECT id 
+            FROM wiegand_groups
+            WHERE sn = $1 AND LOWER(TRIM(group_id)) = LOWER(TRIM($2))
+            LIMIT 1
+            `,
+            [normalizedSn, normalizedGroupId]
+        );
+
+        if (existing.rows.length > 0) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                code: 409,
+                msg: `Group already exists for this device`,
+                data: null
+            });
+        }
+
+        // -----------------------------
+        // 3️⃣ Insert (NO time_configs)
+        // -----------------------------
+        const query = `
+            INSERT INTO wiegand_groups 
+            (group_id, sn, timestamp, del_flag)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, group_id, sn, timestamp, del_flag
+        `;
+
+        const values = [
+            normalizedGroupId,
+            normalizedSn,
+            timestamp,
+            Boolean(del_flag)
+        ];
+
+        const result = await client.query(query, values);
+
+        await client.query("COMMIT");
+
+        const row = result.rows[0];
+
+        // -----------------------------
+        // 4️⃣ Response (IMPORTANT)
+        // -----------------------------
+        return res.status(200).json({
+            code: 200,
+            msg: "success",
+            data: {
+                id: row.id,
+                group_id: row.group_id,
+                sn: row.sn,
+                timestamp: String(row.timestamp),
+                del_flag: row.del_flag,
+
+                // ⚠️ Keep this for backward compatibility
+                time_configs: []   // always empty now
+            }
+        });
+
+    } catch (error) {
+        await client.query("ROLLBACK");
+
         if (error.code === "23505") {
             return res.status(409).json({
                 code: 409,

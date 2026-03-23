@@ -181,6 +181,8 @@ exports.addUserWiegand1 = async (req, res) => {
 };
 
 exports.addUserWiegand = async (req, res) => {
+  const client = await pool.connect();
+
   try {
     const { sn, user_id, assignments = [] } = req.body;
 
@@ -191,8 +193,13 @@ exports.addUserWiegand = async (req, res) => {
       });
     }
 
-    // Validate each assignment has required fields
-    const invalidAssignments = assignments.filter(item => !item.group_id || !item.time_group_id);
+    // -----------------------------
+    // 1️⃣ Validate input
+    // -----------------------------
+    const invalidAssignments = assignments.filter(
+      item => !item.group_id || !item.time_group_id
+    );
+
     if (invalidAssignments.length > 0) {
       return res.status(400).json({
         success: false,
@@ -201,128 +208,116 @@ exports.addUserWiegand = async (req, res) => {
       });
     }
 
-    // Check for duplicate assignments upfront and return error if any found
-    const duplicateChecks = [];
-    for (const item of assignments) {
-      const { group_id, time_group_id } = item;
-      
-      const existingAssignment = await pool.query(
-        `
-        SELECT id FROM user_wiegands
-        WHERE user_id = $1 AND sn = $2
-        AND group_id = $3 AND time_group_id = $4
-        AND del_flag = false
-        `,
-        [user_id, sn, group_id, time_group_id]
-      );
-
-      if (existingAssignment.rows.length > 0) {
-        duplicateChecks.push({ ...item, reason: "Assignment already exists" });
-      }
-    }
-
-    // If any duplicates found, return error immediately
-    if (duplicateChecks.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "Cannot add assignments - some already exist",
-        duplicates: duplicateChecks,
-        error_code: "DUPLICATE_ASSIGNMENTS"
-      });
-    }
+    await client.query("BEGIN");
 
     const timestamp = Date.now();
+
+    // -----------------------------
+    // 2️⃣ Fetch all groups (ONE QUERY)
+    // -----------------------------
+    const groupIds = [...new Set(assignments.map(a => a.group_id))];
+
+    const groupResult = await client.query(
+      `SELECT id, group_id FROM wiegand_groups WHERE group_id = ANY($1)`,
+      [groupIds]
+    );
+
+    const groupMap = Object.fromEntries(
+      groupResult.rows.map(g => [g.group_id, g.id])
+    );
+
+    // -----------------------------
+    // 3️⃣ Fetch all time groups
+    // -----------------------------
+    const timeGroupIds = [...new Set(assignments.map(a => a.time_group_id))];
+
+    const timeGroupResult = await client.query(
+      `SELECT id, time_group_id FROM time_groups WHERE time_group_id = ANY($1)`,
+      [timeGroupIds]
+    );
+
+    const timeGroupMap = Object.fromEntries(
+      timeGroupResult.rows.map(t => [t.time_group_id, t.id])
+    );
+
     const insertedData = [];
     const skippedData = [];
-    const errors = [];
 
+    // -----------------------------
+    // 4️⃣ Process assignments
+    // -----------------------------
     for (const item of assignments) {
       const { group_id, time_group_id } = item;
 
-      try {
-        // check group exists
-        const existWiegandGrp = await pool.query(
-          `SELECT id FROM wiegand_groups WHERE group_id = $1`,
-          [group_id]
-        );
+      const group_uuid = groupMap[group_id];
+      const time_group_uuid = timeGroupMap[time_group_id];
 
-        if (existWiegandGrp.rows.length === 0) {
-          skippedData.push({ ...item, reason: "Group not found" });
-          continue;
-        }
-
-        // check time group exists
-        const existTimeGroup = await pool.query(
-          `SELECT id FROM time_groups WHERE time_group_id = $1 AND del_flag = false`,
-          [time_group_id]
-        );
-
-        if (existTimeGroup.rows.length === 0) {
-          skippedData.push({ ...item, reason: "Time group not found" });
-          continue;
-        }
-
-        const result = await pool.query(
-          `
-          INSERT INTO user_wiegands
-          (sn, user_id, group_id, group_uuid, time_group_id, time_group_uuid, timestamp, del_flag)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,false)
-          RETURNING *
-          `,
-          [
-            sn,
-            user_id,
-            group_id,
-            existWiegandGrp.rows[0].id,
-            time_group_id,
-            existTimeGroup.rows[0].id,
-            timestamp
-          ]
-        );
-
-        insertedData.push(result.rows[0]);
-
-        // upsert device mapping
-        await pool.query(
-          `
-          INSERT INTO device_group_assignments
-          (sn, remote_group_id, time_group_id, time_group_uuid, timestamp, del_flag)
-          VALUES ($1, $2, $3, $4, $5, false)
-          ON CONFLICT ON CONSTRAINT unique_device_remote_group
-          DO UPDATE SET
-            time_group_id = EXCLUDED.time_group_id,
-            time_group_uuid = EXCLUDED.time_group_uuid,
-            timestamp = EXCLUDED.timestamp,
-            del_flag = false
-          `,
-          [sn, group_id, time_group_id, existTimeGroup.rows[0].id, timestamp]
-        );
-
-      } catch (error) {
-        errors.push({ ...item, error: error.message });
+      if (!group_uuid) {
+        skippedData.push({ ...item, reason: "Group not found" });
+        continue;
       }
+
+      if (!time_group_uuid) {
+        skippedData.push({ ...item, reason: "Time group not found" });
+        continue;
+      }
+
+      // UPSERT (aligned with unique_user_device)
+      const result = await client.query(
+        `
+        INSERT INTO user_wiegands
+        (sn, user_id, group_id, group_uuid, time_group_id, time_group_uuid, timestamp, del_flag)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,false)
+        ON CONFLICT ON CONSTRAINT unique_user_device
+        DO UPDATE SET
+          group_id = EXCLUDED.group_id,
+          group_uuid = EXCLUDED.group_uuid,
+          time_group_id = EXCLUDED.time_group_id,
+          time_group_uuid = EXCLUDED.time_group_uuid,
+          timestamp = EXCLUDED.timestamp,
+          del_flag = false
+        RETURNING *
+        `,
+        [
+          sn,
+          user_id,
+          group_id,
+          group_uuid,
+          time_group_id,
+          time_group_uuid,
+          timestamp
+        ]
+      );
+
+      insertedData.push(result.rows[0]);
     }
+
+    await client.query("COMMIT");
 
     return res.status(201).json({
       success: true,
-      message: `Successfully processed ${assignments.length} assignments`,
+      message: `Processed ${assignments.length} assignments`,
       summary: {
         total_assignments: assignments.length,
         inserted: insertedData.length,
-        skipped: skippedData.length,
-        errors: errors.length
+        skipped: skippedData.length
       },
       data: insertedData,
-      skipped: skippedData,
-      errors: errors.length > 0 ? errors : undefined
+      skipped: skippedData
     });
 
   } catch (error) {
-    console.error("Error:", error);
+    await client.query("ROLLBACK");
+
+    console.error("Add UserWiegand Error:", error);
+
     return res.status(500).json({
       success: false,
       message: error.message
     });
+
+  } finally {
+    client.release();
   }
 };
 
