@@ -24,14 +24,18 @@ exports.fetchAllUsers = async (req, res) => {
     const offset = (pageNum - 1) * limitNum;
 
     // Allowed sort columns
-    const validSortColumns = [
-      "name", "email", "role", "sn", "user_id",
-      "created_at", "updated_at"
-    ];
+    const validSortColumns = {
+      name: "u.name",
+      email: "u.email",
+      role: "u.role",
+      sn: "u.sn",
+      user_id: "u.user_id",
+      created_at: "u.created_at",
+      updated_at: "u.updated_at",
+      device_name: "d.device_name",
+    };
 
-    const sortColumn = validSortColumns.includes(sort_by)
-      ? sort_by
-      : "created_at";
+    const sortColumn = validSortColumns[sort_by] || "u.created_at";
 
     const sortDirection = sort_order.toLowerCase() === "asc" ? "ASC" : "DESC";
 
@@ -49,21 +53,21 @@ exports.fetchAllUsers = async (req, res) => {
 
     // Filter: role
     if (role) {
-      whereConditions.push(`role = $${paramIndex}`);
+      whereConditions.push(`u.role = $${paramIndex}`);
       params.push(role);
       paramIndex++;
     }
 
     // Filter: sn
     if (sn) {
-      whereConditions.push(`sn = $${paramIndex}`);
+      whereConditions.push(`u.sn = $${paramIndex}`);
       params.push(sn);
       paramIndex++;
     }
 
     // Filter: user_id
     if (user_id) {
-      whereConditions.push(`user_id = $${paramIndex}`);
+      whereConditions.push(`u.user_id = $${paramIndex}`);
       params.push(user_id);
       paramIndex++;
     }
@@ -72,56 +76,46 @@ exports.fetchAllUsers = async (req, res) => {
       whereConditions.length > 0 ? "WHERE " + whereConditions.join(" AND ") : "";
 
     // Fetch users with sort + pagination
-    const dataQuery1 = `
+    const dataQuery = `
+      WITH user_groups AS (
+        SELECT
+          uw.user_id,
+          COALESCE(
+            json_agg(
+              DISTINCT jsonb_build_object(
+                'group_id', wg.group_id,
+                'time_group_id', uw.time_group_id,
+                'time_configs', tg.time_configs
+              )
+            ) FILTER (WHERE wg.id IS NOT NULL),
+            '[]'::json
+          ) AS groups
+        FROM user_wiegands uw
+        LEFT JOIN wiegand_groups wg ON uw.group_uuid = wg.id
+        LEFT JOIN time_groups tg ON tg.time_group_id = uw.time_group_id
+        GROUP BY uw.user_id
+      )
       SELECT 
-        u.id, u.name, u.email, u.role, u.sn, u.user_id,u.phone_number,
-         u.wiegand_flag, u.admin_auth,d.device_name,
-        u.created_at, u.updated_at, uw.group_id,wg.sn,wg.time_configs
+        u.id,
+        u.name,
+        u.email,
+        u.role,
+        u.sn,
+        u.user_id,
+        u.phone_number,
+        u.wiegand_flag,
+        u.admin_auth,
+        d.device_name,
+        u.created_at,
+        u.updated_at,
+        COALESCE(ug.groups, '[]'::json) AS groups
       FROM users u
       LEFT JOIN devices d ON u.sn = d.sn
-      LEFT JOIN user_wiegands uw ON u.user_id = uw.user_id
-      LEFT JOIN wiegand_groups wg ON uw.group_uuid = wg.id
+      LEFT JOIN user_groups ug ON ug.user_id = u.user_id
       ${whereClause}
       ORDER BY ${sortColumn} ${sortDirection}
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
-    const dataQuery = `SELECT 
-  u.id,
-  u.name,
-  u.email,
-  u.role,
-  u.sn,
-  u.user_id,
-  u.phone_number,
-  u.wiegand_flag,
-  u.admin_auth,
-  d.device_name,
-  u.created_at,
-  u.updated_at,
-
-  COALESCE(
-    json_agg(
-      json_build_object(
-        'group_id', wg.group_id,
-        'time_configs', wg.time_configs
-      )
-    ) FILTER (WHERE wg.id IS NOT NULL),
-    '[]'
-  ) AS groups
-
-FROM users u
-LEFT JOIN devices d ON u.sn = d.sn
-LEFT JOIN user_wiegands uw ON u.user_id = uw.user_id
-LEFT JOIN wiegand_groups wg ON uw.group_uuid = wg.id
-
-${whereClause}
-
-GROUP BY
-  u.id,
-  d.device_name
-
-ORDER BY ${sortColumn} ${sortDirection}
-LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`
 
 
     params.push(limitNum, offset);

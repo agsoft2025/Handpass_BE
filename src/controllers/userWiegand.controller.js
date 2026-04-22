@@ -180,7 +180,7 @@ exports.addUserWiegand1 = async (req, res) => {
   }
 };
 
-exports.addUserWiegand = async (req, res) => {
+exports.addUserWiegand1 = async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -316,6 +316,160 @@ exports.addUserWiegand = async (req, res) => {
       message: error.message
     });
 
+  } finally {
+    client.release();
+  }
+};
+
+exports.addUserWiegand = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { sn, user_id, assignments = [] } = req.body;
+
+    // -----------------------------
+    // 1️⃣ Strong validation
+    // -----------------------------
+    if (!sn || !user_id || !Array.isArray(assignments) || assignments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "sn, user_id and assignments[] are required"
+      });
+    }
+
+    const cleanedAssignments = assignments.filter(
+      a => a?.group_id?.trim() && a?.time_group_id?.trim()
+    );
+
+    if (cleanedAssignments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid assignments"
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const timestamp = Date.now();
+
+    // -----------------------------
+    // 2️⃣ Fetch groups WITH SN (FIXED)
+    // -----------------------------
+    const groupIds = [...new Set(cleanedAssignments.map(a => a.group_id))];
+
+    const groupResult = await client.query(
+      `SELECT id, group_id FROM wiegand_groups 
+       WHERE sn = $1 AND group_id = ANY($2)`,
+      [sn, groupIds]
+    );
+
+    const groupMap = Object.fromEntries(
+      groupResult.rows.map(g => [g.group_id, g.id])
+    );
+
+    // -----------------------------
+    // 3️⃣ Fetch time groups
+    // -----------------------------
+    const timeGroupIds = [...new Set(cleanedAssignments.map(a => a.time_group_id))];
+
+    const timeGroupResult = await client.query(
+      `SELECT id, time_group_id FROM time_groups 
+       WHERE time_group_id = ANY($1)`,
+      [timeGroupIds]
+    );
+
+    const timeGroupMap = Object.fromEntries(
+      timeGroupResult.rows.map(t => [t.time_group_id, t.id])
+    );
+
+    const validRows = [];
+    const skipped = [];
+
+    // -----------------------------
+    // 4️⃣ Prepare bulk insert data
+    // -----------------------------
+    for (const item of cleanedAssignments) {
+      const group_uuid = groupMap[item.group_id];
+      const time_group_uuid = timeGroupMap[item.time_group_id];
+
+      if (!group_uuid) {
+        skipped.push({ ...item, reason: "Group not found for this device" });
+        continue;
+      }
+
+      if (!time_group_uuid) {
+        skipped.push({ ...item, reason: "Time group not found" });
+        continue;
+      }
+
+      validRows.push([
+        sn,
+        user_id,
+        item.group_id,
+        group_uuid,
+        item.time_group_id,
+        time_group_uuid,
+        timestamp
+      ]);
+    }
+
+    // -----------------------------
+    // 5️⃣ BULK UPSERT (REAL FIX)
+    // -----------------------------
+    let inserted = [];
+
+    if (validRows.length > 0) {
+      const values = validRows
+        .map(
+          (_, i) =>
+            `($${i * 7 + 1},$${i * 7 + 2},$${i * 7 + 3},$${i * 7 + 4},$${i * 7 + 5},$${i * 7 + 6},$${i * 7 + 7},false)`
+        )
+        .join(",");
+
+      const flatValues = validRows.flat();
+
+      const query = `
+        INSERT INTO user_wiegands
+        (sn, user_id, group_id, group_uuid, time_group_id, time_group_uuid, timestamp, del_flag)
+        VALUES ${values}
+        ON CONFLICT ON CONSTRAINT unique_user_device
+        DO UPDATE SET
+          group_id = EXCLUDED.group_id,
+          group_uuid = EXCLUDED.group_uuid,
+          time_group_id = EXCLUDED.time_group_id,
+          time_group_uuid = EXCLUDED.time_group_uuid,
+          timestamp = EXCLUDED.timestamp,
+          del_flag = false
+        RETURNING *;
+      `;
+
+      const result = await client.query(query, flatValues);
+      inserted = result.rows;
+    }
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      success: true,
+      message: "Assignments processed",
+      summary: {
+        total: assignments.length,
+        inserted: inserted.length,
+        skipped: skipped.length
+      },
+      data: inserted,
+      skipped
+    });
+
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    console.error("Add UserWiegand Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
   } finally {
     client.release();
   }

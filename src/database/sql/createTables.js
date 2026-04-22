@@ -71,9 +71,24 @@ CREATE TABLE IF NOT EXISTS time_groups (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   time_group_id VARCHAR(50) UNIQUE NOT NULL,  -- TG001
   name VARCHAR(100),
+  timestamp BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000),
+  del_flag BOOLEAN NOT NULL DEFAULT FALSE,
   time_configs JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMP DEFAULT now(),
   updated_at TIMESTAMP DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS device_group_assignments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  sn VARCHAR(50) NOT NULL,
+  remote_group_id VARCHAR(50) NOT NULL,
+  time_group_id VARCHAR(50) NOT NULL,
+  time_group_uuid UUID REFERENCES time_groups(id) ON DELETE SET NULL,
+  timestamp BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000),
+  del_flag BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT now(),
+  updated_at TIMESTAMP DEFAULT now(),
+  CONSTRAINT unique_device_remote_group UNIQUE (sn, remote_group_id)
 );
 
 
@@ -126,11 +141,51 @@ CREATE TABLE  IF NOT EXISTS processed_attendance_logs (
 );
 
     `);
+    await ensureTimeGroupSchema();
     console.log("✅ Tables checked/created successfully.");
   } catch (err) {
     console.error("❌ Failed to create tables:", err);
     throw err;
   }
+}
+
+// Backfill schema drift for deployments that already created the base tables.
+// These ALTERs are safe to run repeatedly thanks to IF NOT EXISTS.
+async function ensureTimeGroupSchema() {
+  await pool.query(`
+    ALTER TABLE time_groups
+    ADD COLUMN IF NOT EXISTS timestamp BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)
+  `);
+
+  await pool.query(`
+    ALTER TABLE time_groups
+    ADD COLUMN IF NOT EXISTS del_flag BOOLEAN NOT NULL DEFAULT FALSE
+  `);
+
+  await pool.query(`
+    ALTER TABLE time_groups
+    ADD COLUMN IF NOT EXISTS name VARCHAR(100)
+  `);
+
+  await pool.query(`
+    ALTER TABLE device_group_assignments
+    ADD COLUMN IF NOT EXISTS time_group_id VARCHAR(50)
+  `);
+
+  await pool.query(`
+    ALTER TABLE device_group_assignments
+    ADD COLUMN IF NOT EXISTS time_group_uuid UUID REFERENCES time_groups(id) ON DELETE SET NULL
+  `);
+
+  await pool.query(`
+    ALTER TABLE device_group_assignments
+    ADD COLUMN IF NOT EXISTS timestamp BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)
+  `);
+
+  await pool.query(`
+    ALTER TABLE device_group_assignments
+    ADD COLUMN IF NOT EXISTS del_flag BOOLEAN NOT NULL DEFAULT FALSE
+  `);
 }
 
 

@@ -15,6 +15,11 @@ jest.mock("fs", () => ({
   mkdirSync: jest.fn(),
   writeFileSync: jest.fn()
 }));
+jest.mock("bcrypt", () => ({
+  hash: jest.fn(),
+  compare: jest.fn(),
+  genSalt: jest.fn()
+}));
 
 const { pool } = require("../../src/config/database");
 const { validationResult } = require("express-validator");
@@ -338,6 +343,7 @@ describe("Device Controller", () => {
 
     expect(res.json).toHaveBeenCalledWith({
       code: 0,
+      is_registered: true,
       msg: "success",
       data: {
         is_registered: true
@@ -439,10 +445,17 @@ describe("Device Controller", () => {
     pool.query.mockResolvedValueOnce({
       rows: [
         {
-          group_id: "G1",
+          sn: "SN001",
+          remote_group_id: "DG1",
+          time_group_id: "TG001",
+          time_group_uuid: "uuid-1",
+          time_group_name: "11AM-8PM",
           timestamp: 101,
           del_flag: false,
-          time_configs: [{ day: "mon" }]
+          device_name: "Gate 1",
+          device_ip: "10.0.0.10",
+          online_status: 1,
+          time_configs: [{ day: "mon", start: 39600, end: 72000 }]
         }
       ]
     });
@@ -460,10 +473,23 @@ describe("Device Controller", () => {
       data: {
         idDataList: [
           {
-            id: "G1",
+            id: "DG1",
+            device_group_id: "DG1",
+            remote_group_id: "DG1",
+            time_group_id: "TG001",
+            time_group_uuid: "uuid-1",
+            time_group_name: "11AM-8PM",
             timestamp: "101",
             del_flag: false,
-            time_configs: [{ day: "mon" }]
+            device: {
+              sn: "SN001",
+              name: "Gate 1",
+              ip: "10.0.0.10",
+              online_status: 1
+            },
+            time_configs: [{ day: "mon", start: 39600, end: 72000, start_time: "11:00:00", end_time: "20:00:00" }],
+            start_time: "11:00:00",
+            end_time: "20:00:00"
           }
         ]
       }
@@ -492,16 +518,14 @@ describe("Device Controller", () => {
     expect(res.json).toHaveBeenCalledWith({
       code: 0,
       msg: "success",
-      data: {
-        idDataList: [
-          {
-            user_id: "U1",
-            timestamp: "202",
-            del_flag: false,
-            group_id: "G1"
-          }
-        ]
-      }
+      data: [
+        {
+          user_id: "U1",
+          timestamp: "202",
+          del_flag: false,
+          group_id: "G1"
+        }
+      ]
     });
   });
 

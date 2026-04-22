@@ -1,15 +1,61 @@
 const { pool } = require("../config/database");
 
+const formatDeviceTimeValue = (value) => {
+  if (value === null || value === undefined || value === "") return null;
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const totalSeconds = Math.max(0, Math.floor(value));
+    const hours = Math.floor(totalSeconds / 3600) % 24;
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+  }
+
+  const raw = String(value).trim();
+  return raw || null;
+};
+
+const normalizeTimeConfigs = (timeConfigs) => {
+  if (!Array.isArray(timeConfigs)) return [];
+
+  return timeConfigs
+    .map((config) => {
+      if (!config || typeof config !== "object") return null;
+
+      const normalized = { ...config };
+      const startSource = config.start_time ?? config.start;
+      const endSource = config.end_time ?? config.end;
+
+      if (startSource !== undefined && startSource !== null && startSource !== "") {
+        normalized.start_time = formatDeviceTimeValue(startSource);
+      }
+
+      if (endSource !== undefined && endSource !== null && endSource !== "") {
+        normalized.end_time = formatDeviceTimeValue(endSource);
+      }
+
+      return normalized;
+    })
+    .filter(Boolean);
+};
+
 exports.createDeviceGroupAssignment = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { sn, remote_group_id, time_group_id, del_flag = 0 } = req.body;
+    const {
+      sn,
+      remote_group_id,
+      device_group_id,
+      time_group_id,
+      del_flag = 0,
+    } = req.body;
     const timestamp = Date.now();
+    const resolvedDeviceGroupId = String(remote_group_id ?? device_group_id ?? "").trim();
 
-    if (!sn || !remote_group_id || !time_group_id) {
+    if (!sn || !resolvedDeviceGroupId || !time_group_id) {
       return res.status(400).json({
         code: 400,
-        msg: "sn, remote_group_id, time_group_id are required",
+        msg: "sn, device_group_id(remote_group_id), time_group_id are required",
         data: null,
       });
     }
@@ -18,7 +64,7 @@ exports.createDeviceGroupAssignment = async (req, res) => {
 
     const remoteGroupRes = await client.query(
       `SELECT id FROM wiegand_groups WHERE group_id = $1 AND sn = $2 AND del_flag = false`,
-      [remote_group_id, sn]
+      [resolvedDeviceGroupId, sn]
     );
 
     if (remoteGroupRes.rows.length === 0) {
@@ -56,7 +102,7 @@ exports.createDeviceGroupAssignment = async (req, res) => {
 
     const values = [
       sn,
-      remote_group_id,
+      resolvedDeviceGroupId,
       time_group_id,
       timeGroupUuid,
       Number(timestamp),
@@ -69,7 +115,10 @@ exports.createDeviceGroupAssignment = async (req, res) => {
     return res.status(201).json({
       code: 200,
       msg: "success",
-      data: result.rows[0],
+      data: {
+        ...result.rows[0],
+        device_group_id: result.rows[0].remote_group_id,
+      },
     });
   } catch (error) {
     await client.query("ROLLBACK");
@@ -151,6 +200,7 @@ exports.getDeviceGroupAssignments = async (req, res) => {
         dga.id,
         dga.sn,
         dga.remote_group_id,
+        dga.remote_group_id AS device_group_id,
         dga.time_group_id,
         dga.time_group_uuid,
         dga.timestamp,
@@ -159,7 +209,7 @@ exports.getDeviceGroupAssignments = async (req, res) => {
         tg.time_configs
       FROM device_group_assignments dga
       LEFT JOIN devices d ON dga.sn = d.sn
-      LEFT JOIN time_groups tg ON dga.time_group_uuid = tg.id
+      LEFT JOIN time_groups tg ON dga.time_group_uuid = tg.id OR dga.time_group_id = tg.time_group_id
       ${whereClause}
       ORDER BY ${sortField} ${sortDirection}
       LIMIT $${paramIndex++} OFFSET $${paramIndex}
@@ -177,18 +227,26 @@ exports.getDeviceGroupAssignments = async (req, res) => {
     return res.status(200).json({
       code: 200,
       msg: "operation successful",
-      data: result.rows.map((row) => ({
-        id: row.id,
-        sn: row.sn,
-        remote_group_id: row.remote_group_id,
-        time_group_id: row.time_group_id,
-        timestamp: String(row.timestamp),
-        del_flag: row.del_flag,
-        device: {
-          name: row.device_name,
-        },
-        time_configs: row.time_configs,
-      })),
+      data: result.rows.map((row) => {
+        const timeConfigs = normalizeTimeConfigs(row.time_configs);
+        const firstWindow = timeConfigs[0] || {};
+
+        return {
+          id: row.id,
+          sn: row.sn,
+          remote_group_id: row.remote_group_id,
+          device_group_id: row.device_group_id,
+          time_group_id: row.time_group_id,
+          timestamp: String(row.timestamp),
+          del_flag: row.del_flag,
+          device: {
+            name: row.device_name,
+          },
+          time_configs: timeConfigs,
+          start_time: firstWindow.start_time || null,
+          end_time: firstWindow.end_time || null,
+        };
+      }),
       pagination: {
         total,
         page: pageNum,
@@ -205,7 +263,7 @@ exports.updateDeviceGroupAssignment = async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { sn, remote_group_id, time_group_id, del_flag } = req.body;
+    const { sn, remote_group_id, device_group_id, time_group_id, del_flag } = req.body;
 
     if (!id) {
       return res.status(400).json({ code: 400, msg: "ID is required", data: null });
@@ -223,7 +281,11 @@ exports.updateDeviceGroupAssignment = async (req, res) => {
     const current = existingRes.rows[0];
 
     const newSn = typeof sn !== "undefined" ? sn : current.sn;
-    const newRemoteGroupId = typeof remote_group_id !== "undefined" ? remote_group_id : current.remote_group_id;
+    const newRemoteGroupId = typeof remote_group_id !== "undefined"
+      ? remote_group_id
+      : typeof device_group_id !== "undefined"
+        ? device_group_id
+        : current.remote_group_id;
     const newTimeGroupId = typeof time_group_id !== "undefined" ? time_group_id : current.time_group_id;
 
     const remoteGroupRes = await client.query(
@@ -286,7 +348,14 @@ exports.updateDeviceGroupAssignment = async (req, res) => {
     const result = await client.query(updateQuery, values);
     await client.query("COMMIT");
 
-    return res.status(200).json({ code: 0, msg: "Success", data: result.rows[0] });
+    return res.status(200).json({
+      code: 0,
+      msg: "Success",
+      data: {
+        ...result.rows[0],
+        device_group_id: result.rows[0].remote_group_id,
+      },
+    });
   } catch (error) {
     await client.query("ROLLBACK");
     if (error.code === "23505") {

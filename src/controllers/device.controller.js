@@ -1,8 +1,115 @@
 const { pool } = require("../config/database");
 const { connectDevice, addInmateService } = require("../services/device.service");
 const { validationResult } = require("express-validator");
+const moment = require("moment");
 const ERR = require("../utils/errorCodes");
 const deviceLastConnectTime = new Map();
+
+const formatDeviceTimeValue = (value) => {
+  if (value === null || value === undefined || value === "") return null;
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const totalSeconds = Math.max(0, Math.floor(value));
+    const hours = Math.floor(totalSeconds / 3600) % 24;
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const parsed = moment(
+    raw,
+    ["HH:mm:ss", "HH:mm", "h:mm A", "hh:mm A", "h:mmA", "hh:mmA", moment.ISO_8601],
+    true
+  );
+
+  return parsed.isValid() ? parsed.format("HH:mm:ss") : raw;
+};
+
+const normalizeTimeConfig = (config) => {
+  if (!config || typeof config !== "object") return null;
+
+  const startSource = config.start_time ?? config.start;
+  const endSource = config.end_time ?? config.end;
+  const normalized = { ...config };
+
+  if (startSource !== undefined && startSource !== null && startSource !== "") {
+    normalized.start_time = formatDeviceTimeValue(startSource);
+  }
+
+  if (endSource !== undefined && endSource !== null && endSource !== "") {
+    normalized.end_time = formatDeviceTimeValue(endSource);
+  }
+
+  return normalized;
+};
+
+const buildResolvedTimePayload = (timeConfigs) => {
+  const normalizedConfigs = Array.isArray(timeConfigs)
+    ? timeConfigs.map(normalizeTimeConfig).filter(Boolean)
+    : [];
+
+  const firstWindow = normalizedConfigs[0] || {};
+
+  return {
+    time_configs: normalizedConfigs,
+    start_time: firstWindow.start_time || null,
+    end_time: firstWindow.end_time || null,
+  };
+};
+
+const fetchDeviceGroupChanges = async (sn, deviceTimestamp) => {
+  const result = await pool.query(
+    `
+    SELECT
+      dga.id,
+      dga.sn,
+      dga.remote_group_id,
+      dga.time_group_id,
+      dga.timestamp,
+      dga.del_flag,
+      d.device_name,
+      d.device_ip,
+      d.online_status,
+      tg.id AS time_group_uuid,
+      tg.time_configs
+    FROM device_group_assignments dga
+    LEFT JOIN devices d
+      ON d.sn = dga.sn
+    LEFT JOIN time_groups tg
+      ON tg.id = dga.time_group_uuid
+      OR tg.time_group_id = dga.time_group_id
+    WHERE dga.sn = $1
+      AND dga.timestamp > $2
+    ORDER BY dga.timestamp ASC
+    `,
+    [sn, deviceTimestamp]
+  );
+
+  return result.rows.map((row) => {
+    const resolvedTime = buildResolvedTimePayload(row.time_configs);
+
+    return {
+      id: row.remote_group_id,
+      device_group_id: row.remote_group_id,
+      remote_group_id: row.remote_group_id,
+      time_group_id: row.time_group_id,
+      time_group_uuid: row.time_group_uuid,
+      time_group_name: row.time_group_name || row.time_group_id || null,
+      timestamp: String(row.timestamp),
+      del_flag: !!row.del_flag,
+      device: {
+        sn: row.sn,
+        name: row.device_name,
+        ip: row.device_ip,
+        online_status: row.online_status,
+      },
+      ...resolvedTime,
+    };
+  });
+};
 
 // exports.connectDeviceController = async(req , res)=>{
 //   // const { id } = req.user
@@ -1772,63 +1879,7 @@ exports.queryWiegandGroup1 = async (req, res) => {
     }
 
     const deviceTs = Number(device_timestamp) || 0;
-
-    // -----------------------------
-    // 2️⃣ Query device_group_assignments (new model)
-    // -----------------------------
-    let result1 = await pool.query(
-      `
-      SELECT
-        dga.remote_group_id,
-        dga.timestamp,
-        dga.del_flag,
-        tg.time_configs
-      FROM device_group_assignments dga
-      LEFT JOIN time_groups tg ON tg.id = dga.time_group_uuid
-      WHERE dga.sn = $1
-        AND dga.timestamp > $2
-      ORDER BY dga.timestamp ASC
-      `,
-      [sn, deviceTs]
-    );
-
-    let result = await pool.query(`SELECT * FROM device_group_assignments`);
-    console.log("<><>result", result.rows)
-    // -----------------------------
-    // 2️⃣ Query wiegand_groups (legacy model)
-    // -----------------------------
-    // Fallback: legacy wiegand_groups
-    if (!result.rows || result.rows.length === 0) {
-      result = await pool.query(
-        `
-        SELECT group_id AS remote_group_id, timestamp, del_flag, time_configs
-        FROM wiegand_groups
-        WHERE sn = $1
-          AND timestamp > $2
-        ORDER BY timestamp ASC
-        `,
-        [sn, deviceTs]
-      );
-    }
-
-    // -----------------------------
-    // 3️⃣ Format result
-    // -----------------------------
-    const idDataList = result.rows.map(group => {
-      const { remote_group_id, timestamp, del_flag, time_configs } = group;
-
-      const record = {
-        id: remote_group_id,
-        timestamp: timestamp.toString(),
-        del_flag: !!del_flag
-      };
-
-      if (!del_flag) {
-        record.time_configs = time_configs;
-      }
-
-      return record;
-    });
+    const idDataList = await fetchDeviceGroupChanges(sn, deviceTs);
 
     // -----------------------------
     // 4️⃣ Return response
@@ -1863,44 +1914,13 @@ exports.queryWiegandGroup = async (req, res) => {
     }
 
     const deviceTs = Number(device_timestamp) || 0;
-
-    const result = await pool.query(
-      `
-      SELECT 
-        uw.group_id AS id,
-        MAX(uw.timestamp) AS timestamp,
-        BOOL_OR(uw.del_flag) AS del_flag,
-        jsonb_agg(DISTINCT tg.time_configs) AS time_configs
-      FROM user_wiegands uw
-      LEFT JOIN time_groups tg
-        ON uw.time_group_id = tg.time_group_id
-      WHERE uw.sn = $1
-        AND uw.timestamp > $2
-      GROUP BY uw.group_id
-      ORDER BY timestamp ASC;
-      `,
-      [sn, deviceTs]
-    );
-    console.log("<><>query wiegand group result", result.rows);
-
-    const formattedData = result.rows.map(item => {
-      const record = {
-        id: item.id,
-        timestamp: String(item.timestamp),
-        del_flag: item.del_flag
-      };
-
-      if (!item.del_flag && item.time_configs) {
-        // flatten array of arrays
-        record.time_configs = item.time_configs.flat();
-      }
-
-      return record;
-    });
+    const formattedData = await fetchDeviceGroupChanges(sn, deviceTs);
 
     return res.json({
       ...ERR.SUCCESS,
-      data: formattedData
+      data: {
+        idDataList: formattedData
+      }
     });
 
   } catch (error) {
