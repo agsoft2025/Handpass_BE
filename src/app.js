@@ -31,7 +31,9 @@ const remoteGroupRoutes = require("./routes/remoteGroup.routes")
 const attendanceRoutes = require('./routes/attendance.route');
 const { pool } = require('./config/database')
 // const { restartDatabase } = require('./crone/deviceOfflineCron');
-require('./crone/attendanceReminder');
+if (process.env.NODE_ENV !== "test") {
+  require("./crone/attendanceReminder");
+}
 
 app.use(express.json({ limit: "200mb" }));  
 app.use(express.urlencoded({ limit: "200mb", extended: true }));

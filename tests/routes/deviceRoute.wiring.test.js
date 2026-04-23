@@ -1,3 +1,8 @@
+jest.mock("../../src/middleware/auth", () => ({
+  authenticate: jest.fn((req, res, next) => next()),
+  authorizeRoles: jest.fn(() => (req, res, next) => next())
+}));
+
 jest.mock("../../src/controllers/device.controller", () => ({
   updateDeviceStatus: jest.fn((req, res) => res.status(200).json({ route: "updateDeviceStatus" })),
   fetchAllConnectDevices: jest.fn((req, res) => res.status(200).json({ route: "fetchAllConnectDevices" })),

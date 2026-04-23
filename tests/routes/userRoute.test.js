@@ -2,7 +2,8 @@ jest.mock("../../src/middleware/auth", () => ({
   authenticate: jest.fn((req, res, next) => {
     req.user = { id: 1, role: "admin", email: "admin@example.com" };
     next();
-  })
+  }),
+  authorizeRoles: jest.fn(() => (req, res, next) => next())
 }));
 
 jest.mock("../../src/controllers/user.controller", () => ({
@@ -11,6 +12,12 @@ jest.mock("../../src/controllers/user.controller", () => ({
   ),
   fetchAllUsersWithGroup: jest.fn((req, res) =>
     res.status(200).json({ route: "fetchAllUsersWithGroup" })
+  ),
+  getUserProfile: jest.fn((req, res) =>
+    res.status(200).json({ route: "getUserProfile" })
+  ),
+  updateUserProfile: jest.fn((req, res) =>
+    res.status(200).json({ route: "updateUserProfile" })
   ),
   deleteUsersWithGroup: jest.fn((req, res) =>
     res.status(200).json({ route: "deleteUsersWithGroup", id: req.params.id })

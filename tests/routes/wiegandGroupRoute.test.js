@@ -34,6 +34,7 @@ describe("Wiegand Group Api", () => {
     pool.connect.mockResolvedValue(client);
     client.query
       .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
         rows: [
           {
@@ -66,23 +67,22 @@ describe("Wiegand Group Api", () => {
         sn: "SN001",
         timestamp: String(now),
         del_flag: false,
-        time_configs: [{ day: "mon", start: "09:00", end: "18:00" }]
+        time_configs: []
       }
     });
     expect(pool.connect).toHaveBeenCalled();
     expect(client.query).toHaveBeenNthCalledWith(1, "BEGIN");
     expect(client.query).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining("INSERT INTO wiegand_groups"),
-      [
-        "G1",
-        "SN001",
-        now,
-        false,
-        JSON.stringify([{ day: "mon", start: "09:00", end: "18:00" }])
-      ]
+      expect.stringContaining("SELECT id"),
+      ["SN001", "G1"]
     );
-    expect(client.query).toHaveBeenNthCalledWith(3, "COMMIT");
+    expect(client.query).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining("INSERT INTO wiegand_groups"),
+      ["G1", "SN001", now, false]
+    );
+    expect(client.query).toHaveBeenNthCalledWith(4, "COMMIT");
     expect(client.release).toHaveBeenCalled();
 
     Date.now.mockRestore();
@@ -187,6 +187,9 @@ describe("Wiegand Group Api", () => {
         rows: []
       })
       .mockResolvedValueOnce({
+        rows: []
+      })
+      .mockResolvedValueOnce({
         rows: [
           {
             id: 21,
@@ -231,15 +234,20 @@ describe("Wiegand Group Api", () => {
     );
     expect(client.query).toHaveBeenNthCalledWith(
       3,
-      expect.stringContaining("SELECT id FROM wiegand_groups"),
-      ["SN002", "G2", "21"]
+      expect.stringContaining("WHERE sn = $1"),
+      ["SN002", "21"]
     );
     expect(client.query).toHaveBeenNthCalledWith(
       4,
+      expect.stringContaining("LOWER(TRIM(group_id))"),
+      ["G2", "21"]
+    );
+    expect(client.query).toHaveBeenNthCalledWith(
+      5,
       expect.stringContaining("UPDATE wiegand_groups"),
       ["SN002", "G2", JSON.stringify([{ day: "tue" }]), true, now, "21"]
     );
-    expect(client.query).toHaveBeenNthCalledWith(5, "COMMIT");
+    expect(client.query).toHaveBeenNthCalledWith(6, "COMMIT");
     expect(client.release).toHaveBeenCalled();
 
     Date.now.mockRestore();

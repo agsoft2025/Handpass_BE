@@ -2,6 +2,10 @@ jest.mock("../../src/services/auth.services", () => ({
   registerUserService: jest.fn(),
   loginUserService: jest.fn()
 }));
+jest.mock("../../src/middleware/auth", () => ({
+  authenticate: jest.fn((req, res, next) => next()),
+  authorizeRoles: jest.fn(() => (req, res, next) => next())
+}));
 jest.mock("jsonwebtoken", () => ({
   verify: jest.fn()
 }));

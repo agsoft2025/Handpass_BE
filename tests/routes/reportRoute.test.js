@@ -2,12 +2,16 @@ jest.mock("../../src/middleware/auth", () => ({
   authenticate: jest.fn((req, res, next) => {
     req.user = { id: 1, role: "admin", email: "admin@example.com" };
     next();
-  })
+  }),
+  authorizeRoles: jest.fn(() => (req, res, next) => next())
 }));
 
 jest.mock("../../src/controllers/report.controller", () => ({
   deviceAccessReport: jest.fn((req, res) =>
     res.status(200).json({ route: "deviceAccessReport" })
+  ),
+  fetchUsersByGroup: jest.fn((req, res) =>
+    res.status(200).json({ route: "fetchUsersByGroup", id: req.params.id })
   )
 }));
 
