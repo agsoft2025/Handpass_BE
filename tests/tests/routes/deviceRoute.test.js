@@ -1,4 +1,4 @@
-jest.mock("../../src/config/database", () => ({
+jest.mock("../../../src/config/database", () => ({
   pool: {
     query: jest.fn()
   }
@@ -8,9 +8,9 @@ jest.mock("express-validator", () => ({
 }));
 
 const request = require("supertest");
-const { pool } = require("../../src/config/database");
+const { pool } = require("../../../src/config/database");
 const { validationResult } = require("express-validator");
-const app = require("../../src/app");
+const app = require("../../../src/app");
 
 describe("Device Api", () => {
   beforeEach(() => {

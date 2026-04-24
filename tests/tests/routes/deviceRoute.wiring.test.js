@@ -1,9 +1,9 @@
-jest.mock("../../src/middleware/auth", () => ({
+jest.mock("../../../src/middleware/auth", () => ({
   authenticate: jest.fn((req, res, next) => next()),
   authorizeRoles: jest.fn(() => (req, res, next) => next())
 }));
 
-jest.mock("../../src/controllers/device.controller", () => ({
+jest.mock("../../../src/controllers/device.controller", () => ({
   updateDeviceStatus: jest.fn((req, res) => res.status(200).json({ route: "updateDeviceStatus" })),
   fetchAllConnectDevices: jest.fn((req, res) => res.status(200).json({ route: "fetchAllConnectDevices" })),
   deviceGetUsers: jest.fn((req, res) => res.status(200).json({ route: "deviceGetUsers" })),
@@ -23,15 +23,15 @@ jest.mock("../../src/controllers/device.controller", () => ({
   fetchSingleDevice: jest.fn((req, res) => res.status(200).json({ route: "fetchSingleDevice" })),
   deleteDevice: jest.fn((req, res) => res.status(200).json({ route: "deleteDevice" }))
 }));
-jest.mock("../../src/controllers/user.controller", () => ({
+jest.mock("../../../src/controllers/user.controller", () => ({
   addUserData: jest.fn((req, res) => res.status(200).json({ route: "addUserData" }))
 }));
 
 const express = require("express");
 const request = require("supertest");
-const deviceController = require("../../src/controllers/device.controller");
-const userController = require("../../src/controllers/user.controller");
-const router = require("../../src/routes/device.route");
+const deviceController = require("../../../src/controllers/device.controller");
+const userController = require("../../../src/controllers/user.controller");
+const router = require("../../../src/routes/device.route");
 
 const app = express();
 app.use(express.json());

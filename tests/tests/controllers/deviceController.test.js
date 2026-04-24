@@ -1,4 +1,4 @@
-jest.mock("../../src/config/database", () => ({
+jest.mock("../../../src/config/database", () => ({
   pool: {
     query: jest.fn()
   }
@@ -6,7 +6,7 @@ jest.mock("../../src/config/database", () => ({
 jest.mock("express-validator", () => ({
   validationResult: jest.fn()
 }));
-jest.mock("../../src/services/device.service", () => ({
+jest.mock("../../../src/services/device.service", () => ({
   connectDevice: jest.fn(),
   addInmateService: jest.fn()
 }));
@@ -21,12 +21,12 @@ jest.mock("bcrypt", () => ({
   genSalt: jest.fn()
 }));
 
-const { pool } = require("../../src/config/database");
+const { pool } = require("../../../src/config/database");
 const { validationResult } = require("express-validator");
-const { connectDevice } = require("../../src/services/device.service");
+const { connectDevice } = require("../../../src/services/device.service");
 const fs = require("fs");
-const deviceController = require("../../src/controllers/device.controller");
-const userController = require("../../src/controllers/user.controller");
+const deviceController = require("../../../src/controllers/device.controller");
+const userController = require("../../../src/controllers/user.controller");
 
 const createRes = () => ({
   status: jest.fn().mockReturnThis(),

@@ -1,18 +1,18 @@
-jest.mock("../../src/services/auth.services", () => ({
+jest.mock("../../../src/services/auth.services", () => ({
   registerUserService: jest.fn(),
   loginUserService: jest.fn()
 }));
 jest.mock("jsonwebtoken", () => ({
   verify: jest.fn()
 }));
-jest.mock("../../src/database/sql/sqlFunction", () => ({
+jest.mock("../../../src/database/sql/sqlFunction", () => ({
   sqlQueryFun: jest.fn()
 }));
 
-const authServices = require("../../src/services/auth.services");
-const authController = require("../../src/controllers/auth.controller");
+const authServices = require("../../../src/services/auth.services");
+const authController = require("../../../src/controllers/auth.controller");
 const jwt = require("jsonwebtoken");
-const { sqlQueryFun } = require("../../src/database/sql/sqlFunction");
+const { sqlQueryFun } = require("../../../src/database/sql/sqlFunction");
 
 describe("Auth Controller", () => {
   beforeEach(() => {

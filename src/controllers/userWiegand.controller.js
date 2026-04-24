@@ -325,7 +325,12 @@ exports.addUserWiegand = async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const { sn, user_id, assignments = [] } = req.body;
+    let { sn, user_id, assignments, group_id, time_group_id } = req.body;
+
+    // Support single assignment in root body
+    if (!assignments && group_id && time_group_id) {
+      assignments = [{ group_id, time_group_id }];
+    }
 
     // -----------------------------
     // 1️⃣ Strong validation
@@ -445,6 +450,27 @@ exports.addUserWiegand = async (req, res) => {
 
       const result = await client.query(query, flatValues);
       inserted = result.rows;
+
+      // -----------------------------
+      // 6️⃣ Sync device_group_assignments
+      // -----------------------------
+      for (const row of inserted) {
+        await client.query(
+          `
+          INSERT INTO device_group_assignments
+            (sn, remote_group_id, time_group_id, time_group_uuid, timestamp, del_flag)
+          VALUES
+            ($1, $2, $3, $4, $5, false)
+          ON CONFLICT ON CONSTRAINT unique_device_remote_group
+          DO UPDATE SET
+            time_group_id = EXCLUDED.time_group_id,
+            time_group_uuid = EXCLUDED.time_group_uuid,
+            timestamp = EXCLUDED.timestamp,
+            del_flag = false
+          `,
+          [row.sn, row.group_id, row.time_group_id, row.time_group_uuid, timestamp]
+        );
+      }
     }
 
     await client.query("COMMIT");

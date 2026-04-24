@@ -36,6 +36,148 @@ exports.fetchAllUsers = async (req, res) => {
     };
 
     const sortColumn = validSortColumns[sort_by] || "u.created_at";
+    const sortDirection = sort_order.toLowerCase() === "asc" ? "ASC" : "DESC";
+
+    // WHERE clause
+    let whereConditions = [];
+    let params = [];
+    let paramIndex = 1;
+
+    if (search.trim()) {
+      whereConditions.push(`(u.name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex} OR u.user_id ILIKE $${paramIndex})`);
+      params.push(`%${search.trim()}%`);
+      paramIndex++;
+    }
+
+    if (role) {
+      whereConditions.push(`u.role = $${paramIndex}`);
+      params.push(role);
+      paramIndex++;
+    }
+
+    if (sn) {
+      whereConditions.push(`u.sn = $${paramIndex}`);
+      params.push(sn);
+      paramIndex++;
+    }
+
+    if (user_id) {
+      whereConditions.push(`u.user_id = $${paramIndex}`);
+      params.push(user_id);
+      paramIndex++;
+    }
+
+    const whereClause =
+      whereConditions.length > 0 ? "WHERE " + whereConditions.join(" AND ") : "";
+
+    // ✅ FIXED QUERY
+    const dataQuery = `
+      WITH user_groups AS (
+        SELECT
+          uw.user_id,
+          COALESCE(
+            json_agg(
+              DISTINCT jsonb_build_object(
+                'group_id', wg.group_id,
+                'time_group_id', tg.time_group_id,
+                'time_configs', tg.time_configs
+              )
+            ) FILTER (WHERE wg.id IS NOT NULL),
+            '[]'::json
+          ) AS groups
+        FROM user_wiegands uw
+        LEFT JOIN wiegand_groups wg ON uw.group_uuid = wg.id
+        LEFT JOIN time_groups tg ON tg.time_group_id = uw.time_group_id
+        GROUP BY uw.user_id
+      )
+      SELECT 
+        u.id,
+        u.name,
+        u.email,
+        u.role,
+        u.sn,
+        u.user_id,
+        u.phone_number,
+        u.wiegand_flag,
+        u.admin_auth,
+        d.device_name,
+        u.created_at,
+        u.updated_at,
+        COALESCE(ug.groups, '[]'::json) AS groups
+      FROM users u
+      LEFT JOIN devices d ON u.sn = d.sn
+      LEFT JOIN user_groups ug ON ug.user_id = u.user_id
+      ${whereClause}
+      ORDER BY ${sortColumn} ${sortDirection}
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
+
+    params.push(limitNum, offset);
+
+    const countQuery = `
+      SELECT COUNT(*) AS total
+      FROM users u
+      ${whereClause}
+    `;
+
+    const dataResult = await pool.query(dataQuery, params);
+    const countResult = await pool.query(countQuery, params.slice(0, -2));
+
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    return res.status(200).json({
+      code: 0,
+      msg: "success",
+      data: dataResult.rows,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        total_pages: Math.ceil(total / limitNum),
+        has_next: pageNum < Math.ceil(total / limitNum),
+        has_prev: pageNum > 1
+      }
+    });
+
+  } catch (error) {
+    console.error("fetchAllUsers error:", error);
+    return res.status(500).json({
+      code: 1,
+      msg: "internal server error",
+    });
+  }
+};
+
+exports.fetchAllUsers1 = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      search = "",
+      role,
+      sn,
+      user_id,
+      sort_by = "created_at",
+      sort_order = "desc"
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const offset = (pageNum - 1) * limitNum;
+
+    // Allowed sort columns
+    const validSortColumns = {
+      name: "u.name",
+      email: "u.email",
+      role: "u.role",
+      sn: "u.sn",
+      user_id: "u.user_id",
+      created_at: "u.created_at",
+      updated_at: "u.updated_at",
+      device_name: "d.device_name",
+    };
+
+    const sortColumn = validSortColumns[sort_by] || "u.created_at";
 
     const sortDirection = sort_order.toLowerCase() === "asc" ? "ASC" : "DESC";
 

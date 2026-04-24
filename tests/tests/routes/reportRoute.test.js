@@ -1,4 +1,4 @@
-jest.mock("../../src/middleware/auth", () => ({
+jest.mock("../../../src/middleware/auth", () => ({
   authenticate: jest.fn((req, res, next) => {
     req.user = { id: 1, role: "admin", email: "admin@example.com" };
     next();
@@ -6,7 +6,7 @@ jest.mock("../../src/middleware/auth", () => ({
   authorizeRoles: jest.fn(() => (req, res, next) => next())
 }));
 
-jest.mock("../../src/controllers/report.controller", () => ({
+jest.mock("../../../src/controllers/report.controller", () => ({
   deviceAccessReport: jest.fn((req, res) =>
     res.status(200).json({ route: "deviceAccessReport" })
   ),
@@ -17,9 +17,9 @@ jest.mock("../../src/controllers/report.controller", () => ({
 
 const express = require("express");
 const request = require("supertest");
-const { authenticate } = require("../../src/middleware/auth");
-const reportController = require("../../src/controllers/report.controller");
-const router = require("../../src/routes/report.routes");
+const { authenticate } = require("../../../src/middleware/auth");
+const reportController = require("../../../src/controllers/report.controller");
+const router = require("../../../src/routes/report.routes");
 
 const app = express();
 app.use(express.json());

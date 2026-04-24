@@ -1,25 +1,25 @@
-jest.mock("../../src/services/auth.services", () => ({
+jest.mock("../../../src/services/auth.services", () => ({
   registerUserService: jest.fn(),
   loginUserService: jest.fn()
 }));
-jest.mock("../../src/middleware/auth", () => ({
+jest.mock("../../../src/middleware/auth", () => ({
   authenticate: jest.fn((req, res, next) => next()),
   authorizeRoles: jest.fn(() => (req, res, next) => next())
 }));
 jest.mock("jsonwebtoken", () => ({
   verify: jest.fn()
 }));
-jest.mock("../../src/database/sql/sqlFunction", () => ({
+jest.mock("../../../src/database/sql/sqlFunction", () => ({
   sqlQueryFun: jest.fn()
 }));
 const request = require("supertest");
-const app = require("../../src/app");
+const app = require("../../../src/app");
 const jwt = require("jsonwebtoken");
-const { sqlQueryFun } = require("../../src/database/sql/sqlFunction");
+const { sqlQueryFun } = require("../../../src/database/sql/sqlFunction");
 const {
   registerUserService,
   loginUserService
-} = require("../../src/services/auth.services");
+} = require("../../../src/services/auth.services");
 
 describe("Auth Api",()=>{
     beforeEach(() => {

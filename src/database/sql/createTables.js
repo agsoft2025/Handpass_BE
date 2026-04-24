@@ -186,6 +186,16 @@ async function ensureTimeGroupSchema() {
     ALTER TABLE device_group_assignments
     ADD COLUMN IF NOT EXISTS del_flag BOOLEAN NOT NULL DEFAULT FALSE
   `);
+
+  await pool.query(`
+    ALTER TABLE user_wiegands
+    ADD COLUMN IF NOT EXISTS time_group_id VARCHAR(50)
+  `);
+
+  await pool.query(`
+    ALTER TABLE user_wiegands
+    ADD COLUMN IF NOT EXISTS time_group_uuid UUID REFERENCES time_groups(id) ON DELETE SET NULL
+  `);
 }
 
 

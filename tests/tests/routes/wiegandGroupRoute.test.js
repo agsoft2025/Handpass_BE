@@ -1,11 +1,11 @@
-jest.mock("../../src/config/database", () => ({
+jest.mock("../../../src/config/database", () => ({
   pool: {
     query: jest.fn(),
     connect: jest.fn()
   }
 }));
 
-jest.mock("../../src/middleware/auth", () => ({
+jest.mock("../../../src/middleware/auth", () => ({
   authenticate: jest.fn((req, res, next) => {
     req.user = { id: 1, role: "admin", email: "admin@example.com" };
     next();
@@ -14,8 +14,8 @@ jest.mock("../../src/middleware/auth", () => ({
 }));
 
 const request = require("supertest");
-const { pool } = require("../../src/config/database");
-const app = require("../../src/app");
+const { pool } = require("../../../src/config/database");
+const app = require("../../../src/app");
 
 describe("Wiegand Group Api", () => {
   beforeEach(() => {

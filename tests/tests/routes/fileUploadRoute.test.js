@@ -1,4 +1,4 @@
-jest.mock("../../src/middleware/auth", () => ({
+jest.mock("../../../src/middleware/auth", () => ({
   authenticate: jest.fn((req, res, next) => {
     req.user = { id: 99, role: "admin", email: "admin@example.com" };
     next();
@@ -15,11 +15,11 @@ const mockMulterFieldsMiddleware = jest.fn((req, res, next) => {
 
 const mockFields = jest.fn(() => mockMulterFieldsMiddleware);
 
-jest.mock("../../src/utils/fileUpload", () => ({
+jest.mock("../../../src/utils/fileUpload", () => ({
   fields: mockFields
 }));
 
-jest.mock("../../src/controllers/fileUpload.controller", () => ({
+jest.mock("../../../src/controllers/fileUpload.controller", () => ({
   fileUploadControllerFun: jest.fn((req, res) =>
     res.status(200).json({
       route: "fileUploadControllerFun",
@@ -40,10 +40,10 @@ jest.mock("../../src/controllers/fileUpload.controller", () => ({
 
 const express = require("express");
 const request = require("supertest");
-const upload = require("../../src/utils/fileUpload");
-const { authenticate } = require("../../src/middleware/auth");
-const fileUploadController = require("../../src/controllers/fileUpload.controller");
-const router = require("../../src/routes/fileUpload.route");
+const upload = require("../../../src/utils/fileUpload");
+const { authenticate } = require("../../../src/middleware/auth");
+const fileUploadController = require("../../../src/controllers/fileUpload.controller");
+const router = require("../../../src/routes/fileUpload.route");
 
 const app = express();
 app.use(express.json());

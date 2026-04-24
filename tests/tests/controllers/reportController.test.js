@@ -1,13 +1,13 @@
-jest.mock("../../src/config/database", () => ({
+jest.mock("../../../src/config/database", () => ({
   pool: {
     query: jest.fn()
   }
 }));
 
-jest.unmock("../../src/controllers/report.controller");
+jest.unmock("../../../src/controllers/report.controller");
 
-const { pool } = require("../../src/config/database");
-const reportController = require("../../src/controllers/report.controller");
+const { pool } = require("../../../src/config/database");
+const reportController = require("../../../src/controllers/report.controller");
 
 const createRes = () => ({
   status: jest.fn().mockReturnThis(),

@@ -1,11 +1,11 @@
-jest.mock("../../src/config/database", () => ({
+jest.mock("../../../src/config/database", () => ({
   pool: {
     query: jest.fn(),
     connect: jest.fn()
   }
 }));
 
-jest.mock("../../src/middleware/auth", () => ({
+jest.mock("../../../src/middleware/auth", () => ({
   authenticate: jest.fn((req, res, next) => {
     req.user = { id: 1, role: "admin", email: "admin@example.com" };
     next();
@@ -14,8 +14,8 @@ jest.mock("../../src/middleware/auth", () => ({
 }));
 
 const request = require("supertest");
-const { pool } = require("../../src/config/database");
-const app = require("../../src/app");
+const { pool } = require("../../../src/config/database");
+const app = require("../../../src/app");
 
 describe("User Wiegand Api", () => {
   beforeEach(() => {
@@ -91,7 +91,7 @@ describe("User Wiegand Api", () => {
     });
     expect(pool.connect).toHaveBeenCalled();
     expect(client.query).toHaveBeenNthCalledWith(1, "BEGIN");
-    expect(client.query).toHaveBeenNthCalledWith(5, "COMMIT");
+    expect(client.query).toHaveBeenLastCalledWith("COMMIT");
     expect(client.release).toHaveBeenCalled();
 
     Date.now.mockRestore();
@@ -177,7 +177,7 @@ describe("User Wiegand Api", () => {
     expect(res.body.message).toBe("Assignment deleted successfully");
     expect(pool.connect).toHaveBeenCalled();
     expect(client.query).toHaveBeenNthCalledWith(1, "BEGIN");
-    expect(client.query).toHaveBeenNthCalledWith(6, "COMMIT");
+    expect(client.query).toHaveBeenLastCalledWith("COMMIT");
     expect(client.release).toHaveBeenCalled();
 
     Date.now.mockRestore();
@@ -253,7 +253,7 @@ describe("User Wiegand Api", () => {
     });
     expect(pool.connect).toHaveBeenCalled();
     expect(client.query).toHaveBeenNthCalledWith(1, "BEGIN");
-    expect(client.query).toHaveBeenNthCalledWith(7, "COMMIT");
+    expect(client.query).toHaveBeenLastCalledWith("COMMIT");
     expect(client.release).toHaveBeenCalled();
 
     Date.now.mockRestore();
