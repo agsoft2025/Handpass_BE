@@ -1914,13 +1914,32 @@ exports.queryWiegandGroup = async (req, res) => {
     }
 
     const deviceTs = Number(device_timestamp) || 0;
-    const formattedData = await fetchDeviceGroupChanges(sn, deviceTs);
+
+    let formattedData = await fetchDeviceGroupChanges(sn, deviceTs);
+
+    // 🔥 sanitize output strictly
+    formattedData = formattedData.map(group => {
+      const result = {
+        id: group.id,
+        timestamp: group.timestamp,
+        del_flag: group.del_flag
+      };
+
+      // only include time_configs if not deleted
+      if (!group.del_flag && group.time_configs) {
+        result.time_configs = group.time_configs.map(tc => ({
+          start: tc.start,
+          end: tc.end,
+          weekdays: tc.weekdays
+        }));
+      }
+
+      return result;
+    });
 
     return res.json({
       ...ERR.SUCCESS,
-      data: {
-        idDataList: formattedData
-      }
+      data: formattedData
     });
 
   } catch (error) {
