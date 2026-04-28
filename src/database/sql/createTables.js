@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS wiegand_groups (
     sn VARCHAR(50) NOT NULL,                        -- device serial number
     timestamp BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000),
     del_flag BOOLEAN NOT NULL DEFAULT FALSE,        -- true = delete
-    time_configs JSONB DEFAULT '[]'::jsonb,         -- time rules
     created_at TIMESTAMP DEFAULT now(),
     updated_at TIMESTAMP DEFAULT now(),
     CONSTRAINT unique_group_per_device UNIQUE (sn, group_id)

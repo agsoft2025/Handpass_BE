@@ -4,6 +4,37 @@ const { validationResult } = require("express-validator");
 const moment = require("moment");
 const ERR = require("../utils/errorCodes");
 const deviceLastConnectTime = new Map();
+const DEVICE_MAX_SECONDS = 86399;
+
+const toDeviceSeconds = (value) => {
+  if (value === null || value === undefined || value === "") return null;
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const seconds = Math.floor(value);
+    if (seconds < 0 || seconds > DEVICE_MAX_SECONDS) return null;
+    return seconds;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  if (/^\d+$/.test(raw)) {
+    const seconds = Number(raw);
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > DEVICE_MAX_SECONDS) return null;
+    return Math.floor(seconds);
+  }
+
+  const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  const ss = Number(match[3] || 0);
+
+  if (hh > 23 || mm > 59 || ss > 59) return null;
+
+  return hh * 3600 + mm * 60 + ss;
+};
 
 const formatDeviceTimeValue = (value) => {
   if (value === null || value === undefined || value === "") return null;
@@ -60,6 +91,95 @@ const buildResolvedTimePayload = (timeConfigs) => {
   };
 };
 
+const normalizeDeviceTimeConfigs = (timeConfigs) => {
+  if (!Array.isArray(timeConfigs)) return [];
+
+  return timeConfigs
+    .map((cfg) => {
+      if (!cfg || typeof cfg !== "object") return null;
+
+      const start = toDeviceSeconds(cfg.start ?? cfg.start_time);
+      const end = toDeviceSeconds(cfg.end ?? cfg.end_time);
+      const weekdays = Number(cfg.weekdays);
+
+      if (
+        !Number.isInteger(start) ||
+        !Number.isInteger(end) ||
+        !Number.isInteger(weekdays) ||
+        weekdays < 1 ||
+        weekdays > 127
+      ) {
+        return null;
+      }
+
+      return { start, end, weekdays };
+    })
+    .filter(Boolean);
+};
+
+const mergeUserTimeConfigsForGroups = async (sn, groupIds) => {
+  if (!Array.isArray(groupIds) || groupIds.length === 0) {
+    return new Map();
+  }
+
+  const result = await pool.query(
+    `
+    SELECT
+      uw.group_id,
+      uw.timestamp AS user_timestamp,
+      tg.timestamp AS time_group_timestamp,
+      tg.del_flag AS time_group_del_flag,
+      tg.time_configs
+    FROM user_wiegands uw
+    LEFT JOIN time_groups tg
+      ON tg.id = uw.time_group_uuid
+      OR tg.time_group_id = uw.time_group_id
+    WHERE uw.sn = $1
+      AND uw.group_id = ANY($2)
+      AND uw.del_flag = false
+    `,
+    [sn, groupIds]
+  );
+
+  const grouped = new Map();
+
+  for (const row of result.rows) {
+    const groupId = String(row.group_id || "").trim();
+    if (!groupId) continue;
+
+    if (!grouped.has(groupId)) {
+      grouped.set(groupId, {
+        max_timestamp: 0,
+        time_configs: [],
+        seen: new Set(),
+      });
+    }
+
+    const entry = grouped.get(groupId);
+    const effectiveTs = Math.max(
+      Number(row.user_timestamp) || 0,
+      Number(row.time_group_timestamp) || 0
+    );
+    entry.max_timestamp = Math.max(entry.max_timestamp, effectiveTs);
+
+    if (row.time_group_del_flag) continue;
+
+    const configs = normalizeDeviceTimeConfigs(row.time_configs);
+    for (const cfg of configs) {
+      const key = `${cfg.start}:${cfg.end}:${cfg.weekdays}`;
+      if (entry.seen.has(key)) continue;
+      entry.seen.add(key);
+      entry.time_configs.push(cfg);
+    }
+  }
+
+  for (const value of grouped.values()) {
+    delete value.seen;
+  }
+
+  return grouped;
+};
+
 const fetchDeviceGroupChanges = async (sn, deviceTimestamp) => {
   const result = await pool.query(
     `
@@ -70,6 +190,8 @@ const fetchDeviceGroupChanges = async (sn, deviceTimestamp) => {
       dga.time_group_id,
       dga.timestamp,
       dga.del_flag,
+      tg.timestamp AS time_group_timestamp,
+      tg.del_flag AS time_group_del_flag,
       d.device_name,
       d.device_ip,
       d.online_status,
@@ -82,13 +204,31 @@ const fetchDeviceGroupChanges = async (sn, deviceTimestamp) => {
       ON tg.id = dga.time_group_uuid
       OR tg.time_group_id = dga.time_group_id
     WHERE dga.sn = $1
-      AND dga.timestamp > $2
-    ORDER BY dga.timestamp ASC
+      AND (
+        GREATEST(dga.timestamp, COALESCE(tg.timestamp, 0)) > $2
+        OR dga.remote_group_id IN (
+          SELECT DISTINCT uw.group_id
+          FROM user_wiegands uw
+          WHERE uw.sn = $1
+            AND uw.timestamp > $2
+        )
+      )
+    ORDER BY GREATEST(dga.timestamp, COALESCE(tg.timestamp, 0)) ASC
     `,
     [sn, deviceTimestamp]
   );
 
   return result.rows.map((row) => {
+    const effectiveTimestamp = Math.max(
+      Number(row.timestamp) || 0,
+      Number(row.time_group_timestamp) || 0
+    );
+    const effectiveDelFlag =
+      !!row.del_flag ||
+      !row.time_group_uuid ||
+      !!row.time_group_del_flag;
+    const mergedTimeConfigs = normalizeDeviceTimeConfigs(row.time_configs);
+
     const resolvedTime = buildResolvedTimePayload(row.time_configs);
 
     return {
@@ -98,14 +238,15 @@ const fetchDeviceGroupChanges = async (sn, deviceTimestamp) => {
       time_group_id: row.time_group_id,
       time_group_uuid: row.time_group_uuid,
       time_group_name: row.time_group_name || row.time_group_id || null,
-      timestamp: String(row.timestamp),
-      del_flag: !!row.del_flag,
+      timestamp: String(effectiveTimestamp),
+      del_flag: effectiveDelFlag,
       device: {
         sn: row.sn,
         name: row.device_name,
         ip: row.device_ip,
         online_status: row.online_status,
       },
+      merged_time_configs: mergedTimeConfigs,
       ...resolvedTime,
     };
   });
@@ -981,26 +1122,19 @@ exports.connect = async (req, res) => {
       [sn]
     );
 
-    const userMaxResult = await pool.query(
-      `
-      SELECT COALESCE(
-        MAX(EXTRACT(EPOCH FROM updated_at) * 1000),
-        0
-      ) AS max_ts
-      FROM users
-      `,
-    );
-
     const register_timestamp =
-      Math.floor(userMaxResult.rows[0].max_ts || 0).toString();
+      Math.floor(userMaxResult1.rows[0].max_ts || 0).toString();
     // -----------------------------
     // 2️⃣ Wiegand Groups max timestamp
     // -----------------------------
     const groupMaxResult = await pool.query(
       `
-      SELECT COALESCE(MAX(timestamp), 0) AS max_ts
-      FROM wiegand_groups
-      WHERE sn = $1
+      SELECT COALESCE(MAX(GREATEST(dga.timestamp, COALESCE(tg.timestamp, 0))), 0) AS max_ts
+      FROM device_group_assignments dga
+      LEFT JOIN time_groups tg
+        ON tg.id = dga.time_group_uuid
+        OR tg.time_group_id = dga.time_group_id
+      WHERE dga.sn = $1
       `,
       [sn]
     );
@@ -1015,9 +1149,24 @@ exports.connect = async (req, res) => {
     // -----------------------------
     const userWiegandMaxResult = await pool.query(
       `
-      SELECT COALESCE(MAX(timestamp), 0) AS max_ts
-      FROM user_wiegands
-      WHERE sn = $1
+      SELECT COALESCE(
+        MAX(
+          GREATEST(
+            uw.timestamp,
+            COALESCE(dga.timestamp, 0),
+            COALESCE(tg.timestamp, 0)
+          )
+        ),
+        0
+      ) AS max_ts
+      FROM user_wiegands uw
+      LEFT JOIN device_group_assignments dga
+        ON dga.sn = uw.sn
+       AND dga.remote_group_id = uw.group_id
+      LEFT JOIN time_groups tg
+        ON tg.id = uw.time_group_uuid
+        OR tg.time_group_id = uw.time_group_id
+      WHERE uw.sn = $1
       `,
       [sn]
     );
@@ -1909,29 +2058,44 @@ exports.queryWiegandGroup = async (req, res) => {
     if (!sn || device_timestamp === undefined) {
       return res.json({
         ...ERR.PARAM_ERROR,
-        data: []
+        data: { idDataList: [] }
       });
     }
 
     const deviceTs = Number(device_timestamp) || 0;
 
     let formattedData = await fetchDeviceGroupChanges(sn, deviceTs);
+    const groupIds = [...new Set(formattedData.map((group) => String(group.id || "").trim()).filter(Boolean))];
+    const mergedFromUsers = await mergeUserTimeConfigsForGroups(sn, groupIds);
 
     // 🔥 sanitize output strictly
     formattedData = formattedData.map(group => {
+      const userMerged = mergedFromUsers.get(group.id);
+      const effectiveTimestamp = String(
+        Math.max(
+          Number(group.timestamp) || 0,
+          Number(userMerged?.max_timestamp) || 0
+        )
+      );
+      const effectiveTimeConfigs =
+        Array.isArray(userMerged?.time_configs) && userMerged.time_configs.length > 0
+          ? userMerged.time_configs
+          : Array.isArray(group.merged_time_configs)
+            ? group.merged_time_configs
+            : [];
+
       const result = {
         id: group.id,
-        timestamp: group.timestamp,
+        timestamp: effectiveTimestamp,
         del_flag: group.del_flag
       };
 
       // only include time_configs if not deleted
-      if (!group.del_flag && group.time_configs) {
-        result.time_configs = group.time_configs.map(tc => ({
-          start: tc.start,
-          end: tc.end,
-          weekdays: tc.weekdays
-        }));
+      if (!group.del_flag && effectiveTimeConfigs.length > 0) {
+        result.time_configs = effectiveTimeConfigs;
+      } else if (!group.del_flag) {
+        // If time group is not valid, force delete semantics for device cache consistency.
+        result.del_flag = true;
       }
 
       return result;
@@ -1939,7 +2103,9 @@ exports.queryWiegandGroup = async (req, res) => {
 
     return res.json({
       ...ERR.SUCCESS,
-      data: formattedData
+      data: {
+        idDataList: formattedData
+      }
     });
 
   } catch (error) {
@@ -1947,7 +2113,7 @@ exports.queryWiegandGroup = async (req, res) => {
 
     return res.json({
       ...ERR.DB_QUERY_ERROR,
-      data: []
+      data: { idDataList: [] }
     });
   }
 };
@@ -2033,7 +2199,7 @@ exports.queryUserWiegand = async (req, res) => {
     if (!sn || device_timestamp === undefined) {
       return res.json({
         ...ERR.PARAM_ERROR,
-        data: []
+        data: { idDataList: [] }
       });
     }
 
@@ -2042,42 +2208,73 @@ exports.queryUserWiegand = async (req, res) => {
     const result = await pool.query(
       `
       SELECT 
-        user_id,
-        timestamp,
-        del_flag,
-        group_id
-      FROM user_wiegands
-      WHERE sn = $1
-        AND timestamp > $2
-      ORDER BY timestamp ASC
+        uw.user_id,
+        uw.group_id,
+        uw.timestamp AS user_timestamp,
+        uw.del_flag AS user_del_flag,
+        uw.time_group_uuid,
+        dga.id AS assignment_id,
+        dga.del_flag AS assignment_del_flag,
+        dga.timestamp AS assignment_timestamp,
+        tg.id AS time_group_id,
+        tg.del_flag AS time_group_del_flag,
+        tg.timestamp AS time_group_timestamp,
+        GREATEST(
+          uw.timestamp,
+          COALESCE(dga.timestamp, 0),
+          COALESCE(tg.timestamp, 0)
+        ) AS effective_timestamp
+      FROM user_wiegands uw
+      LEFT JOIN device_group_assignments dga
+        ON dga.sn = uw.sn
+       AND dga.remote_group_id = uw.group_id
+      LEFT JOIN time_groups tg
+        ON tg.id = uw.time_group_uuid
+        OR tg.time_group_id = uw.time_group_id
+      WHERE uw.sn = $1
+        AND GREATEST(
+          uw.timestamp,
+          COALESCE(dga.timestamp, 0),
+          COALESCE(tg.timestamp, 0)
+        ) > $2
+      ORDER BY effective_timestamp ASC
       `,
       [sn, deviceTs]
     );
 
-    const formattedData = result.rows.map(item => ({
-      user_id: item.user_id,
-      timestamp: item.timestamp.toString(),
-      del_flag: item.del_flag,
-      ...(item.del_flag ? {} : { group_id: item.group_id })
-    }));
-    console.log("<><>user wiegant result", formattedData);
+    const formattedData = result.rows.map(item => {
+      const effectiveDelFlag =
+        !!item.user_del_flag ||
+        !item.assignment_id ||
+        !!item.assignment_del_flag ||
+        !item.time_group_id ||
+        !!item.time_group_del_flag;
+
+      const record = {
+        user_id: item.user_id,
+        timestamp: String(item.effective_timestamp || 0),
+        del_flag: effectiveDelFlag
+      };
+
+      if (!effectiveDelFlag) {
+        record.group_id = item.group_id;
+      }
+
+      return record;
+    });
 
     return res.json({
       ...ERR.SUCCESS,
-      data: formattedData
+      data: {
+        idDataList: formattedData
+      }
     });
 
   } catch (error) {
     console.error(error);
     return res.json({
       ...ERR.DB_QUERY_ERROR,
-      data: []
+      data: { idDataList: [] }
     });
   }
 };
-
-
-
-
-
-

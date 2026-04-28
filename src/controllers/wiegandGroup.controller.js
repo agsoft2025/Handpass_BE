@@ -268,6 +268,173 @@ exports.getWiegandGroups = async (req, res) => {
         if (![0, 1].includes(parsedDelFlag)) {
             return res.status(400).json({
                 code: 400,
+                msg: "Invalid del_flag",
+                data: null
+            });
+        }
+
+        const pageNum = Math.max(1, Number(page));
+        const limitNum = Math.min(100, Math.max(1, Number(limit)));
+        const offset = (pageNum - 1) * limitNum;
+
+        // ----------------------------
+        // 2️⃣ Sorting validation
+        // ----------------------------
+        const validSortFields = [
+            "wg.group_id",
+            "wg.timestamp",
+            "wg.created_at",
+            "wg.updated_at"
+        ];
+
+        const sortField = validSortFields.includes(sort_by)
+            ? sort_by
+            : "wg.group_id";
+
+        const sortDirection =
+            sort_order.toUpperCase() === "DESC" ? "DESC" : "ASC";
+
+        // ----------------------------
+        // 3️⃣ WHERE Conditions
+        // ----------------------------
+        let whereConditions = ["wg.del_flag = $1"];
+        let values = [parsedDelFlag === 1];
+        let paramIndex = 2;
+
+        if (sn) {
+            whereConditions.push(`wg.sn = $${paramIndex++}`);
+            values.push(sn);
+        }
+
+        if (search) {
+            whereConditions.push(
+                `(wg.group_id ILIKE $${paramIndex} OR wg.sn ILIKE $${paramIndex})`
+            );
+            values.push(`%${search}%`);
+            paramIndex++;
+        }
+
+        const whereClause = `WHERE ${whereConditions.join(" AND ")}`;
+
+        // ----------------------------
+        // 4️⃣ MAIN QUERY (CORRECT JOIN)
+        // ----------------------------
+        const query = `
+        SELECT 
+            wg.id,
+            wg.group_id,
+            wg.sn,
+            wg.timestamp,
+            wg.del_flag,
+
+            tg.time_configs,
+
+            d.device_name,
+            d.device_ip,
+            d.online_status
+
+        FROM wiegand_groups wg
+
+        LEFT JOIN device_group_assignments dga 
+            ON wg.group_id = dga.remote_group_id 
+            AND wg.sn = dga.sn
+
+        LEFT JOIN time_groups tg 
+            ON dga.time_group_id = tg.time_group_id
+
+        LEFT JOIN devices d 
+            ON wg.sn = d.sn
+
+        ${whereClause}
+
+        ORDER BY ${sortField} ${sortDirection}
+        LIMIT $${paramIndex++} OFFSET $${paramIndex}
+        `;
+
+        values.push(limitNum, offset);
+
+        const result = await pool.query(query, values);
+
+        if (!result.rows.length) {
+            return res.status(404).json({
+                code: 404,
+                msg: "No wiegand groups found",
+                data: []
+            });
+        }
+
+        // ----------------------------
+        // 5️⃣ Count Query
+        // ----------------------------
+        const countQuery = `
+            SELECT COUNT(*) 
+            FROM wiegand_groups wg
+            ${whereClause}
+        `;
+
+        const countResult = await pool.query(
+            countQuery,
+            values.slice(0, values.length - 2)
+        );
+
+        const total = Number(countResult.rows[0].count);
+
+        return res.status(200).json({
+            code: 200,
+            msg: "operation successful",
+            data: result.rows.map(row => ({
+                id: row.id,
+                group_id: row.group_id,
+                sn: row.sn,
+                timestamp: String(row.timestamp),
+                del_flag: row.del_flag,
+
+                // 🔥 important fix
+                time_configs: row.time_configs || [],
+
+                device: {
+                    name: row.device_name,
+                    ip: row.device_ip,
+                    online_status: row.online_status
+                }
+            })),
+            pagination: {
+                total,
+                page: pageNum,
+                limit: limitNum,
+                total_pages: Math.ceil(total / limitNum)
+            }
+        });
+
+    } catch (error) {
+        console.error("Error fetching Wiegand groups:", error);
+        return res.status(500).json({
+            code: 500,
+            msg: "internal server error",
+            data: null
+        });
+    }
+};
+
+exports.getWiegandGroups1 = async (req, res) => {
+    try {
+        const {
+            page = 1,
+            limit = 10,
+            search = "",
+            sort_by = "wg.group_id",
+            sort_order = "ASC",
+            del_flag = 0,
+            sn
+        } = req.query;
+
+        // ----------------------------
+        // 1️⃣ Validate del_flag
+        // ----------------------------
+        const parsedDelFlag = Number(del_flag);
+        if (![0, 1].includes(parsedDelFlag)) {
+            return res.status(400).json({
+                code: 400,
                 msg: "del_flag",
                 data: null
             });
@@ -393,6 +560,7 @@ exports.getWiegandGroups = async (req, res) => {
         });
 
     } catch (error) {
+        console.log("Error fetching Wiegand groups:", error);
         return res.status(500).json({
             code: 500,
             msg: "internal server down",
